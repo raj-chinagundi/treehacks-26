@@ -95,6 +95,68 @@ export function computeReport(
   }
 }
 
+// ─── Live Stats (lightweight, runs every chart tick) ─────────────────────────
+
+export interface LiveStats {
+  clenchCount: number
+  stressLikelihood: number
+  sleepQualityScore: number
+  avgHR: number
+  peakEMG: number
+  avgTemp: number
+  isClenching: boolean
+}
+
+/**
+ * Computes running analysis from the current data buffer.
+ * Lightweight version of computeReport — called every ~1s while connected.
+ */
+export function computeLiveStats(data: SensorPoint[]): LiveStats {
+  if (!data.length) {
+    return { clenchCount: 0, stressLikelihood: 0, sleepQualityScore: 100, avgHR: 0, peakEMG: 0, avgTemp: 0, isClenching: false }
+  }
+
+  const clenches = detectClenchesExported(data)
+  const hrValues = data.map(d => d.hr)
+  const hrBaseline = median(hrValues)
+  const avgHR = hrValues.reduce((a, b) => a + b, 0) / hrValues.length
+  const hrVariability = stdDev(hrValues)
+  const peakEMG = Math.max(...data.map(d => d.emg))
+  const avgTemp = data.reduce((a, b) => a + b.temp, 0) / data.length
+  const tempDrift = Math.abs(data[data.length - 1].temp - data[0].temp)
+
+  let stressCount = 0
+  for (const ev of clenches) {
+    const w = data.filter(d => d.t >= ev.startMs - HR_WINDOW_MS && d.t <= ev.endMs + HR_WINDOW_MS)
+    if (w.length && Math.max(...w.map(d => d.hr)) > hrBaseline * (1 + HR_SPIKE_PCT)) {
+      stressCount++
+    }
+  }
+  const stressLikelihood = clenches.length ? Math.round((stressCount / clenches.length) * 100) : 0
+
+  const clenchPenalty = Math.min(40, clenches.length * 2)
+  const hrVarPenalty = Math.min(30, hrVariability * 0.5)
+  const tempPenalty = Math.min(20, tempDrift * 100)
+  const sleepQualityScore = Math.max(0, Math.round(100 - clenchPenalty - hrVarPenalty - tempPenalty))
+
+  const last = data[data.length - 1]
+  const isClenching = last.emg >= EMG_THRESHOLD
+
+  return {
+    clenchCount: clenches.length,
+    stressLikelihood,
+    sleepQualityScore,
+    avgHR: Math.round(avgHR * 10) / 10,
+    peakEMG: Math.round(peakEMG * 1000) / 1000,
+    avgTemp: Math.round(avgTemp * 100) / 100,
+    isClenching,
+  }
+}
+
+function detectClenchesExported(data: SensorPoint[]) {
+  return detectClenches(data)
+}
+
 export function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60)
   const s = seconds % 60

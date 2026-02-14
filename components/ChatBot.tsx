@@ -10,8 +10,7 @@
  *   gemini_active  → DentalAgent (Gemini 2.5 Flash + Google Search) driving conv.
  *   done           → booking confirmed or user declined
  *
- * CSS classes are the original chatbot.css classes, loaded via globals.css.
- * The grounding badge (verified / unverified) is identical to chatbot.css.
+ * Renders as a floating popup panel in the bottom-right corner of the dashboard.
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react'
@@ -28,15 +27,10 @@ interface ChatMsg {
   id: string
   role: 'user' | 'assistant'
   text: string
-  /** Option buttons rendered below this message */
   options?: DentalOption[]
-  /** True once a button in this group has been clicked */
   optionsDone?: boolean
-  /** Which option value was selected */
   selectedValue?: string
-  /** Grounding badge rendered below this message */
   grounding?: GroundingInfo
-  /** Render as a wearable report card (booking confirmation) */
   isReportCard?: boolean
   reportCardHtml?: string
 }
@@ -51,6 +45,7 @@ interface Props {
     address: string
     reportId: string
   }) => void
+  onClose?: () => void
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -109,7 +104,7 @@ function buildReportCardHtml(report: ReportRecord): string {
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
-export default function ChatBot({ report, sessionStatus, onBookingCreated }: Props) {
+export default function ChatBot({ report, sessionStatus, onBookingCreated, onClose }: Props) {
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [phase, setPhase]       = useState<Phase>('idle')
   const [typing, setTyping]     = useState(false)
@@ -118,10 +113,9 @@ export default function ChatBot({ report, sessionStatus, onBookingCreated }: Pro
 
   const agentRef   = useRef<DentalAgent | null>(null)
   const bottomRef  = useRef<HTMLDivElement>(null)
-  const phaseRef   = useRef<Phase>('idle')   // stable ref for async callbacks
+  const phaseRef   = useRef<Phase>('idle')
   const reportRef  = useRef<ReportRecord | null>(null)
 
-  // keep refs in sync
   useEffect(() => { phaseRef.current = phase }, [phase])
   useEffect(() => { reportRef.current = report }, [report])
 
@@ -146,7 +140,7 @@ export default function ChatBot({ report, sessionStatus, onBookingCreated }: Pro
   useEffect(() => {
     addMsg({
       role: 'assistant',
-      text: '👋 Welcome to JawSense! Start a session to begin monitoring. When your session is complete, I\'ll summarize the results and can connect you with a dental specialist.',
+      text: '👋 Welcome to JawSense! Start a session to begin monitoring. When your session is complete, I\'ll summarize the results and can connect you with a dental specialist nearby.',
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -161,7 +155,7 @@ export default function ChatBot({ report, sessionStatus, onBookingCreated }: Pro
 
   useEffect(() => {
     if (!report) return
-    if (phaseRef.current !== 'idle') return   // don't re-trigger on re-renders
+    if (phaseRef.current !== 'idle') return
 
     const bullets = generateBullets(report)
     const summaryLines = bullets.map(b => `• ${b}`).join('\n')
@@ -216,7 +210,6 @@ export default function ChatBot({ report, sessionStatus, onBookingCreated }: Pro
       }
     }
 
-    // In gemini_active, option selection = send the option value as a message
     if (phaseRef.current === 'gemini_active') {
       await sendToGemini(opt.label)
     }
@@ -231,7 +224,6 @@ export default function ChatBot({ report, sessionStatus, onBookingCreated }: Pro
     agentRef.current = agent
     setPhase('gemini_active')
 
-    // Mirror the original: first message is sent automatically
     setTyping(true)
     try {
       const turn = await agent.processMessage(
@@ -262,12 +254,11 @@ export default function ChatBot({ report, sessionStatus, onBookingCreated }: Pro
     }
   }
 
-  // ── Render a Gemini AgentTurn (message + options + grounding + card) ──────
+  // ── Render a Gemini AgentTurn ─────────────────────────────────────────────
 
   function renderAgentTurn(turn: AgentTurn) {
     const { response, grounding } = turn
 
-    // Build the report card HTML if this is the booking confirmation
     const isCard = response.showReport && reportRef.current != null
     const cardHtml = isCard ? buildReportCardHtml(reportRef.current!) : undefined
 
@@ -282,8 +273,6 @@ export default function ChatBot({ report, sessionStatus, onBookingCreated }: Pro
 
     if (response.bookingConfirmed) {
       setPhase('done')
-
-      // Extract booking details from last selected option (best effort)
       const lastBooking = extractLastBooking()
       if (lastBooking && reportRef.current && onBookingCreated) {
         onBookingCreated({ ...lastBooking, reportId: reportRef.current.id })
@@ -291,7 +280,6 @@ export default function ChatBot({ report, sessionStatus, onBookingCreated }: Pro
     }
   }
 
-  /** Try to extract provider info from the last selected option in messages */
   function extractLastBooking() {
     const msgs = [...messages].reverse()
     for (const m of msgs) {
@@ -343,16 +331,23 @@ export default function ChatBot({ report, sessionStatus, onBookingCreated }: Pro
   return (
     <div className="flex flex-col h-full min-h-0">
 
-      {/* Header — mirrors chat-header from chatbot.css */}
+      {/* Header */}
       <div className="chat-header flex-shrink-0">
         <div className="chat-header-dot" />
-        <div>
+        <div className="flex-1">
           <div className="chat-header-title">JawSense AI</div>
-          <div className="chat-header-sub">Report analysis &amp; clinic booking</div>
+          <div className="chat-header-sub">Find dentists &amp; book appointments</div>
         </div>
+        {onClose && (
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-300 transition-colors p-1">
+            <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+            </svg>
+          </button>
+        )}
       </div>
 
-      {/* Messages — uses .chat-messages from chatbot.css / globals.css */}
+      {/* Messages */}
       <div className="chat-messages">
         {messages.map(msg => (
           <MessageRow
@@ -362,7 +357,6 @@ export default function ChatBot({ report, sessionStatus, onBookingCreated }: Pro
           />
         ))}
 
-        {/* Typing indicator — .typing from chatbot.css */}
         {typing && (
           <div className="typing">
             <span /><span /><span />
@@ -374,7 +368,6 @@ export default function ChatBot({ report, sessionStatus, onBookingCreated }: Pro
 
       {/* Input area */}
       {phase === 'api_key_input' ? (
-        /* API key form replaces normal input when key is needed */
         <div className="chat-input-area flex-shrink-0 flex-col gap-2" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
           <input
             type="password"
@@ -382,35 +375,33 @@ export default function ChatBot({ report, sessionStatus, onBookingCreated }: Pro
             onChange={e => setApiKeyDraft(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && handleApiKeySubmit()}
             placeholder="Paste Gemini API key…"
-            className="w-full border border-gray-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-sky-500 bg-white"
+            className="w-full border border-slate-600 rounded-xl px-3 py-2 text-xs bg-slate-800 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
           />
           <div className="flex gap-2 items-center">
             <a
               href="https://aistudio.google.com/app/apikey"
               target="_blank"
               rel="noreferrer"
-              className="text-xs text-sky-600 hover:underline flex-1"
+              className="text-xs text-cyan-400 hover:underline flex-1"
             >
               Get free key →
             </a>
             <button
               onClick={handleApiKeySubmit}
               disabled={!apiKeyDraft.trim()}
-              className="px-4 py-1.5 bg-gray-900 text-white rounded-lg text-xs font-medium hover:opacity-85 disabled:opacity-30 transition-opacity"
+              className="px-4 py-1.5 bg-cyan-600 text-white rounded-lg text-xs font-medium hover:bg-cyan-500 disabled:opacity-30 transition-all"
             >
               Connect
             </button>
           </div>
         </div>
       ) : (
-        /* Normal textarea + send button — .chat-input-area from chatbot.css */
         <div className="chat-input-area flex-shrink-0">
           <textarea
             rows={1}
             value={input}
             onChange={e => {
               setInput(e.target.value)
-              // auto-grow
               e.target.style.height = 'auto'
               e.target.style.height = Math.min(e.target.scrollHeight, 80) + 'px'
             }}
@@ -454,12 +445,10 @@ function MessageRow({
 }) {
   return (
     <>
-      {/* Bubble — .msg.user / .msg.assistant */}
       <div className={`msg ${msg.role}`}>
         <RichText text={msg.text} />
       </div>
 
-      {/* Wearable report card (booking confirmation) */}
       {msg.isReportCard && msg.reportCardHtml && (
         <div
           className="msg-card"
@@ -467,7 +456,6 @@ function MessageRow({
         />
       )}
 
-      {/* Option buttons — .msg-buttons / .msg-option-btn from chatbot.css */}
       {msg.options && msg.options.length > 0 && (
         <div className="msg-buttons">
           {msg.options.map(opt => (
@@ -484,7 +472,6 @@ function MessageRow({
         </div>
       )}
 
-      {/* Grounding badge — .grounding-badge.verified / .unverified from chatbot.css */}
       {msg.grounding && (
         <div className={`grounding-badge ${msg.grounding.verified ? 'verified' : 'unverified'}`}>
           <span className="grounding-icon">{msg.grounding.verified ? '✓' : '⚠️'}</span>
@@ -512,7 +499,6 @@ function MessageRow({
   )
 }
 
-/** Render text with **bold** markdown and \n line-breaks */
 function RichText({ text }: { text: string }) {
   const lines = text.split('\n')
   return (
