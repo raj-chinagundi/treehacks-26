@@ -2,7 +2,7 @@
 import { useState } from 'react'
 import { ReportRecord } from '@/types'
 
-type Status = 'idle' | 'recording' | 'analyzing' | 'report_ready'
+type Status = 'disconnected' | 'connected' | 'report_ready'
 
 interface Props {
   report: ReportRecord | null
@@ -13,58 +13,48 @@ interface Props {
 export default function ReportBox({ report, bullets, status }: Props) {
   const [expanded, setExpanded] = useState(false)
 
-  if (status === 'analyzing') {
-    return (
-      <div className="bg-white rounded-xl border border-gray-200 p-4">
-        <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Report</h3>
-        <div className="flex flex-col items-center gap-2 py-4">
-          <div className="w-5 h-5 border-2 border-sky-500 border-t-transparent rounded-full animate-spin" />
-          <span className="text-xs text-gray-400">Analyzing session data…</span>
-        </div>
-      </div>
-    )
-  }
-
   if (!report || !bullets.length) {
     return (
-      <div className="bg-white rounded-xl border border-gray-200 p-4">
-        <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Report</h3>
-        <p className="text-xs text-gray-400 text-center py-4">Complete a session to see your report</p>
+      <div className="bg-slate-800/50 rounded-xl border border-slate-700/50 p-5">
+        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Saved Report</h3>
+        <p className="text-xs text-slate-500 text-center py-4">
+          {status === 'connected' ? 'Click "Save Report" to capture a snapshot of the current analysis' : 'Connect your device and save a report to view it here'}
+        </p>
       </div>
     )
   }
 
   const scoreColor =
-    report.sleepQualityScore >= 75 ? 'bg-emerald-100 text-emerald-700' :
-    report.sleepQualityScore >= 50 ? 'bg-amber-100 text-amber-700' :
-                                     'bg-rose-100 text-rose-700'
+    report.sleepQualityScore >= 75 ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20' :
+    report.sleepQualityScore >= 50 ? 'bg-amber-500/15 text-amber-400 border border-amber-500/20' :
+                                     'bg-rose-500/15 text-rose-400 border border-rose-500/20'
 
   const main  = bullets.slice(0, 4)
   const extra = bullets.slice(4)
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-4">
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Report</h3>
-        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${scoreColor}`}>
+    <div className="bg-slate-800/50 rounded-xl border border-slate-700/50 p-5">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Saved Report</h3>
+        <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${scoreColor}`}>
           {report.sleepQualityScore}/100
         </span>
       </div>
 
-      <ul className="space-y-1.5">
+      <ul className="space-y-2">
         {main.map((b, i) => (
-          <li key={i} className="text-xs text-gray-700 flex gap-2">
-            <span className="text-sky-500 flex-shrink-0">•</span>
+          <li key={i} className="text-sm text-slate-300 flex gap-2">
+            <span className="text-cyan-400 flex-shrink-0">•</span>
             <span>{b}</span>
           </li>
         ))}
       </ul>
 
       {expanded && extra.length > 0 && (
-        <ul className="mt-2 space-y-1.5">
+        <ul className="mt-2 space-y-2">
           {extra.map((b, i) => (
-            <li key={i} className="text-xs text-gray-700 flex gap-2">
-              <span className="text-sky-500 flex-shrink-0">•</span>
+            <li key={i} className="text-sm text-slate-300 flex gap-2">
+              <span className="text-cyan-400 flex-shrink-0">•</span>
               <span>{b}</span>
             </li>
           ))}
@@ -74,10 +64,22 @@ export default function ReportBox({ report, bullets, status }: Props) {
       {extra.length > 0 && (
         <button
           onClick={() => setExpanded(e => !e)}
-          className="mt-3 text-xs text-sky-600 hover:text-sky-800 font-medium">
+          className="mt-3 text-xs text-cyan-400 hover:text-cyan-300 font-medium">
           {expanded ? '▲ Less info' : '▼ More info'}
         </button>
       )}
+
+      {/* AI Transparency Disclaimer */}
+      <div className="mt-4 pt-4 border-t border-slate-700/50">
+        <div className="flex items-start gap-2">
+          <svg className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 6a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 6zm0 9a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
+          </svg>
+          <p className="text-xs text-slate-500 leading-relaxed">
+            This report is generated by <span className="text-slate-400">AI analysis</span> and is for informational purposes only. For professional dental guidance, use our chatbot assistant to connect with a specialist.
+          </p>
+        </div>
+      </div>
     </div>
   )
 }

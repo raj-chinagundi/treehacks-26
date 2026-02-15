@@ -4,7 +4,7 @@ import { useState } from 'react'
 
 export default function SignInButton() {
   const [showMock, setShowMock] = useState(false)
-  const [email, setEmail]       = useState('demo@jawsense.ai')
+  const [email, setEmail]       = useState('demo@sleepsense.ai')
   const [name, setName]         = useState('Demo User')
   const [loading, setLoading]   = useState(false)
 
@@ -25,16 +25,16 @@ export default function SignInButton() {
       <div className="space-y-3">
         <input type="email" value={email} onChange={e => setEmail(e.target.value)}
           placeholder="Email"
-          className="w-full px-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" />
+          className="w-full px-4 py-2 bg-slate-800/60 border border-slate-700 rounded-lg text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent" />
         <input type="text" value={name} onChange={e => setName(e.target.value)}
           placeholder="Display Name"
-          className="w-full px-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" />
+          className="w-full px-4 py-2 bg-slate-800/60 border border-slate-700 rounded-lg text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent" />
         <button onClick={handleMock} disabled={loading}
-          className="w-full py-2.5 bg-sky-600 text-white rounded-lg font-medium text-sm hover:bg-sky-700 disabled:opacity-50 transition-colors">
+          className="w-full py-2.5 bg-cyan-600 text-white rounded-lg font-medium text-sm hover:bg-cyan-500 disabled:opacity-50 transition-colors">
           {loading ? 'Signing in…' : 'Continue as Demo User'}
         </button>
         <button onClick={() => setShowMock(false)}
-          className="w-full py-2 text-gray-400 text-sm hover:text-gray-600">
+          className="w-full py-2 text-slate-500 text-sm hover:text-slate-300">
           ← Back
         </button>
       </div>
@@ -44,7 +44,7 @@ export default function SignInButton() {
   return (
     <div className="space-y-3">
       <button onClick={handleGoogle} disabled={loading}
-        className="w-full flex items-center justify-center gap-3 py-2.5 px-4 border border-gray-200 rounded-lg bg-white text-gray-700 font-medium text-sm hover:bg-gray-50 disabled:opacity-50 transition-colors shadow-sm">
+        className="w-full flex items-center justify-center gap-3 py-2.5 px-4 border border-slate-700 rounded-lg bg-slate-800/60 text-slate-200 font-medium text-sm hover:bg-slate-700/60 disabled:opacity-50 transition-colors">
         <svg width="18" height="18" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg">
           <path fill="#4285F4" d="M16.51 8H8.98v3h4.3c-.18 1-.74 1.48-1.6 2.04v2.01h2.6a7.8 7.8 0 0 0 2.38-5.88c0-.57-.05-.66-.15-1.18Z"/>
           <path fill="#34A853" d="M8.98 17c2.16 0 3.97-.72 5.3-1.94l-2.6-2a4.8 4.8 0 0 1-7.18-2.54H1.83v2.07A8 8 0 0 0 8.98 17Z"/>
@@ -56,15 +56,15 @@ export default function SignInButton() {
 
       <div className="relative">
         <div className="absolute inset-0 flex items-center">
-          <div className="w-full border-t border-gray-200" />
+          <div className="w-full border-t border-slate-700" />
         </div>
         <div className="relative flex justify-center text-xs">
-          <span className="bg-white px-2 text-gray-400">or</span>
+          <span className="bg-[#0a0e1a] px-2 text-slate-500">or</span>
         </div>
       </div>
 
       <button onClick={() => setShowMock(true)}
-        className="w-full py-2.5 text-sm text-gray-500 hover:text-gray-700 border border-dashed border-gray-300 rounded-lg hover:border-gray-400 transition-colors">
+        className="w-full py-2.5 text-sm text-slate-400 hover:text-slate-200 border border-dashed border-slate-600 rounded-lg hover:border-slate-500 transition-colors">
         Use demo account (no OAuth required)
       </button>
     </div>

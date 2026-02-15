@@ -1,38 +1,190 @@
-# JawSense — Sleep & Clenching Analytics
+# SleepSense
 
-A full-stack bruxism / jaw-clenching monitoring dashboard built for Stanford Hacks 2026.
+> Real-time bruxism and jaw-clenching monitoring dashboard — built at Stanford Hacks 2026.
+
+SleepSense connects a wearable heart-rate sensor and an ESP32 EMG jaw sensor to a live analytics dashboard. Sensor data streams through a Flask data hub into a Next.js frontend that visualizes jaw activity, detects clenching events, classifies them by their cardiac–muscular relationship, and generates clinical-grade reports. An embedded GPT-4o chatbot can reason over the patient's data and book a specialist through Google Places.
+
+[![Demo Video](https://img.shields.io/badge/Demo-YouTube-red?logo=youtube)](https://www.youtube.com/watch?v=acdo23eFIlc)
 
 ---
 
-## Features
+## Table of Contents
 
-| | |
+- [Project Structure](#project-structure)
+- [Tech Stack](#tech-stack)
+- [Architecture Overview](#architecture-overview)
+- [Setup](#setup)
+- [Usage](#usage)
+- [Demo Video](#demo-video)
+
+---
+
+## Project Structure
+
+```
+sleepsense/
+├── app/                            # Next.js App Router
+│   ├── page.tsx                    # Landing page — sign-in (Google OAuth or demo)
+│   ├── layout.tsx                  # Root layout with dark theme + SessionProvider
+│   ├── providers.tsx               # NextAuth SessionProvider wrapper
+│   ├── globals.css                 # Tailwind base + chatbot widget styles
+│   ├── dashboard/
+│   │   └── page.tsx                # Auth-protected dashboard entry point
+│   └── api/
+│       ├── auth/[...nextauth]/
+│       │   └── route.ts            # NextAuth handler (Google + mock credentials)
+│       ├── sessions/
+│       │   ├── route.ts            # GET list / POST create sessions
+│       │   └── [id]/route.ts       # GET / PUT individual session
+│       ├── reports/
+│       │   └── route.ts            # GET by sessionId / POST generate report
+│       ├── bookings/
+│       │   └── route.ts            # POST create booking record
+│       └── places/
+│           └── route.ts            # Proxy to Google Places Text Search API
+│
+├── components/
+│   ├── Dashboard.tsx               # Main 3-section layout + session state machine
+│   ├── ChatBot.tsx                 # SleepSense AI chatbot — GPT-4o with function calling
+│   ├── ReportBox.tsx               # Expandable bullet-point report card
+│   ├── SignInButton.tsx            # Google OAuth + demo sign-in form
+│   ├── StatusBadge.tsx             # Connection status indicator
+│   └── charts/
+│       ├── HeartRateChart.tsx      # BPM area chart (Recharts)
+│       ├── JawActivityChart.tsx    # 3-level step chart (Relaxed / Talking / Clenching)
+│       ├── EMGChart.tsx            # Raw EMG waveform line chart
+│       ├── HRChart.tsx             # Simple HR line chart
+│       └── MainChart.tsx           # Combined 3-signal overview chart
+│
+├── lib/
+│   ├── auth.ts                     # NextAuth config (Google provider + mock)
+│   ├── storage.ts                  # JSON file read/write for sessions, reports, bookings
+│   ├── mockSensor.ts               # Seeded PRNG sensor data generator
+│   ├── reportLogic.ts              # Clench detection, event classification, report scoring
+│   └── bruxismAgent.ts             # SleepSense AI — GPT-4o agent with search_clinics + confirm_booking tools
+│
+├── types/
+│   └── index.ts                    # TypeScript interfaces (SensorPoint, SessionRecord, etc.)
+│
+├── credentials/
+│   └── service-account.json        # Google service account for Sheets API (EMG polling)
+│
+├── data/
+│   └── db.json                     # Auto-created local JSON database
+│
+├── test.py                         # Flask data hub (SleepSense Data Hub) — unifies HR + EMG into 10 Hz SSE stream
+├── requirements.txt                # Python dependencies (flask, gspread, google-auth)
+├── package.json                    # Node dependencies and scripts
+├── tailwind.config.ts              # Tailwind CSS configuration
+├── tsconfig.json                   # TypeScript configuration
+├── next.config.mjs                 # Next.js configuration
+└── postcss.config.mjs              # PostCSS plugins (Tailwind + Autoprefixer)
+```
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
 |---|---|
-| **Session monitoring** | Start/Stop sessions that stream mock EMG, heart-rate, and temperature data at 10 Hz |
-| **Live charts** | EMG waveform, heart-rate line, and a combined three-signal overview (Recharts) |
-| **Report engine** | Detects clench events, stress likelihood, and a sleep-quality proxy score |
-| **AI chatbot** | Embedded right-column panel: shows report summary, then hands off to Gemini 2.5 Flash for live Google-Search–powered dental clinic booking |
-| **Grounding badges** | Identical to the original NightGuard UI — shows ✓ Verified or ⚠ Unverified based on Gemini `groundingMetadata` |
-| **Persistence** | Local JSON file (`data/db.json`) stores sessions, reports, and booking records |
-| **Auth** | Google OAuth **or** a zero-config mock/demo sign-in |
-| **Past sessions** | Dropdown in the top bar to reload any previous report and chart data |
+| **Frontend** | Next.js 14 (App Router) + React 18 + TypeScript |
+| **Styling** | Tailwind CSS |
+| **Charts** | Recharts (AreaChart, LineChart, ReferenceArea) |
+| **Auth** | NextAuth v4 — Google OAuth + zero-config mock credentials |
+| **AI Chatbot** | SleepSense AI — GPT-4o via OpenAI API with function calling (search_clinics, confirm_booking) |
+| **Clinic Search** | Google Places Text Search API |
+| **Data Hub** | SleepSense Data Hub — Flask (Python), combines HR + EMG into a 10 Hz SSE stream |
+| **EMG Sensor** | ESP32 → Google Sheets → Flask polls via `gspread` |
+| **HR Sensor** | Wearable POSTs BPM to Flask `/data` endpoint |
+| **Storage** | Local JSON file (`data/db.json`) via Node `fs` in API routes |
 
 ---
 
-## Quick start
+## Architecture Overview
+
+```
+┌──────────────┐    POST /data     ┌──────────────────────┐   SSE /stream    ┌─────────────────────┐
+│  HR Wearable │ ─────────────────▶│                      │ ────────────────▶│                     │
+└──────────────┘                   │  SleepSense Data Hub │                  │  Next.js Dashboard  │
+┌──────────────┐  Google Sheets    │   (test.py :5001)    │                  │  (localhost:3000)   │
+│  ESP32 EMG   │ ─────────────────▶│   10 Hz combiner     │                  │                     │
+└──────────────┘                   └──────────────────────┘                  │  ┌───────────────┐  │
+                                                                            │  │ Live Charts   │  │
+                                                                            │  │ Event Detect  │  │
+                                                                            │  │ Report Engine │  │
+                                                                            │  │ GPT-4o Chat   │  │
+                                                                            │  └───────────────┘  │
+                                                                            └─────────────────────┘
+```
+
+**Data flow:**
+
+1. **Heart rate** — A wearable device POSTs BPM readings to Flask at `/data`.
+2. **EMG** — An ESP32 writes raw 12-bit ADC values to a Google Sheet. Flask polls the sheet every second via `gspread`.
+3. **Flask combiner** — A background thread reads the latest HR + EMG at 10 Hz and pushes combined JSON events over SSE (`/stream`).
+4. **Next.js dashboard** — Opens an `EventSource` to Flask, buffers incoming data points, and refreshes charts at 5 Hz.
+5. **Report engine** (`reportLogic.ts`) — Classifies jaw activity into Relaxed / Talking / Clenching using ADC thresholds, detects bruxating events, correlates them with heart-rate arousal, and scores sleep quality.
+6. **AI chatbot** (`bruxismAgent.ts`) — Sends the full sensor data dump + event log as GPT-4o system context. The model analyzes patterns, identifies root causes, and can call `search_clinics` (Google Places) and `confirm_booking` to schedule a specialist visit.
+
+---
+
+## Setup
+
+### Prerequisites
+
+- **Node.js** ≥ 18
+- **Python** ≥ 3.9 (for the Flask data hub)
+- **npm**
+
+### 1. Install Node dependencies
 
 ```bash
-# 1. Clone / open the project
-cd jawsense
-
-# 2. Install dependencies
+cd sleepsense
 npm install
+```
 
-# 3. Copy the env template
-cp .env.local.example .env.local
-# Edit .env.local if you want to add Google OAuth keys
+### 2. Install Python dependencies
 
-# 4. Run the dev server
+```bash
+pip install -r requirements.txt
+```
+
+### 3. Configure environment variables
+
+Create a `.env.local` file in the project root:
+
+```env
+# NextAuth
+NEXTAUTH_SECRET=your-random-secret
+NEXTAUTH_URL=http://localhost:3000
+
+# Google OAuth (optional — demo sign-in works without it)
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+
+# Google Places API (required for clinic search in chatbot)
+GOOGLE_PLACES_API_KEY=...
+
+# OpenAI (optional — can also be entered in the chatbot UI at runtime)
+NEXT_PUBLIC_OPENAI_API_KEY=...
+```
+
+> **Note:** The demo sign-in mode works with no environment variables at all. Google OAuth, Places, and OpenAI keys are only needed for their respective features.
+
+### 4. Start the Flask data hub
+
+```bash
+python test.py
+```
+
+This starts the SleepSense Data Hub on **port 5001**. It will:
+- Accept heart-rate POSTs from the wearable at `/data`
+- Poll Google Sheets for ESP32 EMG data
+- Stream combined data at 10 Hz via SSE at `/stream`
+
+### 5. Start the Next.js dev server
+
+```bash
 npm run dev
 ```
 
@@ -40,110 +192,34 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ---
 
-## Sign-in options
+## Usage
 
-### Mock / demo sign-in (no setup required)
-1. Click **"Use demo account (no OAuth required)"** on the landing page.
-2. Enter any email and display name (defaults work fine).
-3. Click **Continue as Demo User**.
+### Sign In
 
-### Google OAuth (optional)
-1. Create a project at [console.cloud.google.com](https://console.cloud.google.com).
-2. Enable the **Google People API**.
-3. Create an OAuth 2.0 client ID (Web application).
-4. Add `http://localhost:3000/api/auth/callback/google` as an authorised redirect URI.
-5. Copy the client ID and secret into `.env.local`:
-   ```
-   GOOGLE_CLIENT_ID=…
-   GOOGLE_CLIENT_SECRET=…
-   ```
-6. Restart the dev server — the **Sign in with Google** button will now work.
+- **Demo mode** — Click *"Use demo account"* on the landing page. No OAuth setup needed.
+- **Google OAuth** — Configure `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `.env.local`, add `http://localhost:3000/api/auth/callback/google` as an authorized redirect URI in Google Cloud Console.
 
----
+### Monitor a Session
 
-## Using the AI clinic-booking chatbot
+1. Click **Connect Device** — the dashboard opens an SSE connection to the Flask data hub and starts buffering sensor data.
+2. Live charts update at 5 Hz showing **Heart Rate** (BPM area chart) and **Jaw Activity** (3-level step chart: Relaxed → Talking → Clenching).
+3. The **Live Analysis** panel displays running metrics: clenching events, sleep quality score, current jaw state, and average heart rate.
+4. Click **Save Report** at any time to snapshot the current analysis. The report engine classifies each bruxating event as *arousal-linked* (HR spike preceded the clench) or *isolated* (habitual pattern).
+5. Click **Disconnect** to stop the session.
 
-The right-column chatbot uses **Gemini 2.5 Flash** with the **Google Search** grounding tool to find real dental clinics.
+### AI Chatbot
 
-1. Complete a session (Start → Stop).
-2. The chatbot shows your report summary and asks if you want to find a specialist.
-3. Click **"Yes, find me a specialist"**.
-4. If no Gemini API key is stored, an inline form appears — paste your key.
-   - Get a free key at [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey).
-   - The key is saved in `sessionStorage` only — it never leaves the browser or hits our server.
-5. The agent searches Google for real clinics near your location, presents options, and walks you through booking.
-6. A green **✓ Verified via Google Search** badge confirms live search was used.
+1. Click the chat bubble in the bottom-right corner.
+2. If no OpenAI API key is configured, paste one when prompted (stored in `sessionStorage` only).
+3. Ask questions about your session data — GPT-4o has the full sensor dump and event log as context.
+4. When ready, the chatbot offers to find a specialist. It calls the Google Places API via function calling, presents clinics, and can confirm a booking that includes the sensor report and chat thread.
+
+### Past Sessions
+
+Use the **Past Sessions** dropdown in the top bar to reload any previously saved session's report and chart data.
 
 ---
 
-## Deterministic demo mode
+## Demo Video
 
-Append `?seed=42` (or any integer) to the dashboard URL for a repeatable sensor sequence:
-
-```
-http://localhost:3000/dashboard?seed=42
-```
-
----
-
-## Tech stack
-
-| Layer | Choice |
-|---|---|
-| Framework | Next.js 14 (App Router) + TypeScript |
-| Styling | Tailwind CSS + chatbot CSS ported from original NightGuard |
-| Charts | Recharts |
-| Auth | NextAuth v4 (Google + mock credentials) |
-| Storage | Local JSON (`data/db.json`) via Node `fs` in API routes |
-| AI chatbot | Gemini 2.5 Flash — same API call, same JSON parsing, same grounding logic as `agent.js` |
-
----
-
-## Project structure
-
-```
-jawsense/
-├── app/
-│   ├── globals.css          # Tailwind + chatbot.css styles (msg bubbles, grounding badges …)
-│   ├── layout.tsx / providers.tsx
-│   ├── page.tsx             # Landing / sign-in
-│   ├── dashboard/page.tsx   # Auth-protected dashboard wrapper
-│   └── api/
-│       ├── auth/[...nextauth]/route.ts
-│       ├── sessions/        # GET list, POST create, GET/PUT by ID
-│       ├── reports/         # GET by sessionId, POST generate
-│       └── bookings/        # POST create
-├── components/
-│   ├── Dashboard.tsx        # 3-column layout, session state machine
-│   ├── ChatBot.tsx          # React port of chatbot.js + agent.js (Gemini booking)
-│   ├── ReportBox.tsx        # Bullet-point report with expand/collapse
-│   ├── StatusBadge.tsx
-│   ├── SignInButton.tsx
-│   └── charts/
-│       ├── EMGChart.tsx
-│       ├── HRChart.tsx
-│       └── MainChart.tsx
-├── lib/
-│   ├── auth.ts              # NextAuth options
-│   ├── storage.ts           # JSON file read/write (server-only)
-│   ├── mockSensor.ts        # Seeded PRNG + sensor data generation
-│   ├── reportLogic.ts       # Clench detection, report heuristics, plain-text export
-│   └── dentalAgent.ts       # TypeScript port of agent.js (Gemini + Google Search)
-├── types/index.ts
-├── data/db.json             # Auto-created on first run
-└── .env.local               # Copied from .env.local.example
-```
-
----
-
-## Chatbot origin
-
-The `ChatBot` component and `DentalAgent` class are direct TypeScript ports of
-`chatbot.js` / `agent.js` / `chatbot.css` from the original NightGuard project:
-
-- Same Gemini 2.5 Flash API endpoint
-- Same `google_search: {}` tool for real clinic data
-- Same `groundingMetadata` extraction for the verification badge
-- Same three-pass JSON parsing (direct → strip fences → regex extract)
-- Same multi-turn `conversationHistory` pattern
-- Visual classes (`.msg`, `.msg-option-btn`, `.grounding-badge`, `.typing`, …) preserved verbatim in `globals.css`
+▶️ **Watch the full demo:** [https://www.youtube.com/watch?v=acdo23eFIlc](https://www.youtube.com/watch?v=acdo23eFIlc)

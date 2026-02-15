@@ -1,10 +1,9 @@
-type Status = 'idle' | 'recording' | 'analyzing' | 'report_ready'
+type Status = 'disconnected' | 'connected' | 'report_ready'
 
 const CFG: Record<Status, { label: string; ring: string; dot: string }> = {
-  idle:         { label: 'Idle',         ring: 'bg-gray-100 text-gray-500',      dot: 'bg-gray-400' },
-  recording:    { label: 'Recording',    ring: 'bg-emerald-100 text-emerald-700', dot: 'bg-emerald-500 animate-pulse' },
-  analyzing:    { label: 'Analyzing',    ring: 'bg-sky-100 text-sky-700',         dot: 'bg-sky-500 animate-pulse' },
-  report_ready: { label: 'Report Ready', ring: 'bg-violet-100 text-violet-700',   dot: 'bg-violet-500' },
+  disconnected:  { label: 'Disconnected', ring: 'bg-slate-800 text-slate-400',         dot: 'bg-slate-500' },
+  connected:     { label: 'Live',         ring: 'bg-emerald-500/10 text-emerald-400',  dot: 'bg-emerald-400 animate-pulse' },
+  report_ready:  { label: 'Report Saved', ring: 'bg-violet-500/10 text-violet-400',    dot: 'bg-violet-400' },
 }
 
 export default function StatusBadge({ status }: { status: Status }) {
