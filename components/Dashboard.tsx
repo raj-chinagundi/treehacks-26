@@ -480,6 +480,7 @@ export default function Dashboard({ user }: { user: User }) {
           <ChatBot
             liveStats={liveStats}
             getRawData={() => rawBuf.current}
+            report={report}
             sessionStatus={chatSessionStatus}
             onClose={() => setChatOpen(false)}
           />
