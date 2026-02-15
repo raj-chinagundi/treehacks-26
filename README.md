@@ -2,7 +2,7 @@
 
 > Real-time bruxism and jaw-clenching monitoring dashboard — built at Stanford Hacks 2026.
 
-SleepSense connects a wearable heart-rate sensor and an ESP32 EMG jaw sensor to a live analytics dashboard. Sensor data streams through a Flask data hub into a Next.js frontend that visualizes jaw activity, detects clenching events, classifies them by their cardiac–muscular relationship, and generates clinical-grade reports. An embedded GPT-4o chatbot can reason over the patient's data and book a specialist through Google Places.
+SleepSense connects a smartwatch heart-rate sensor and an muscle sensor to a live analytics dashboard. Sensor data streams through a Flask data hub into a Next.js frontend that visualizes jaw activity, detects clenching events, classifies them by their cardiac–muscular relationship, and generates clinical-grade reports. An embedded GPT-4o chatbot can reason over the patient's data and book a specialist through Google Places.
 
 [![Demo Video](https://img.shields.io/badge/Demo-YouTube-red?logo=youtube)](https://www.youtube.com/watch?v=acdo23eFIlc)
 
