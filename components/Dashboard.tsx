@@ -268,7 +268,7 @@ export default function Dashboard({ user }: { user: User }) {
               <circle cx="22" cy="22" r="3.5" fill="#0a0e1a"/>
             </svg>
           </div>
-          <span className="font-semibold text-white text-sm tracking-tight">JawSense</span>
+          <span className="font-semibold text-white text-sm tracking-tight">SleepSense</span>
           {/* Device connection indicator */}
           {isConnected && (
             <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium ${
@@ -420,7 +420,7 @@ export default function Dashboard({ user }: { user: User }) {
           </div>
           <div className="bg-slate-900/60 backdrop-blur rounded-2xl border border-slate-800 p-4">
             <p className="text-xs text-slate-500 uppercase tracking-wider font-medium">Jaw Activity</p>
-            <p className={`text-2xl font-bold mt-1 ${catStyle.color}`}>{catStyle.label}</p>
+            <p className={`text-2xl font-bold mt-1 ${catStyle.color} tabular-nums`}>{latestEMG > 0 ? ((latestEMG / 4096) * 3.3).toFixed(3) : '0.000'} <span className="text-sm font-normal text-slate-500">V</span></p>
           </div>
           <div className="bg-slate-900/60 backdrop-blur rounded-2xl border border-slate-800 p-4">
             <p className="text-xs text-slate-500 uppercase tracking-wider font-medium">Duration</p>

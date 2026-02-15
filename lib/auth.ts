@@ -16,11 +16,11 @@ export const authOptions: NextAuthOptions = {
       id: 'mock',
       name: 'Demo Account',
       credentials: {
-        email: { label: 'Email', type: 'email', placeholder: 'demo@jawsense.ai' },
+        email: { label: 'Email', type: 'email', placeholder: 'demo@sleepsense.ai' },
         name: { label: 'Name', type: 'text', placeholder: 'Demo User' },
       },
       async authorize(credentials) {
-        const email = credentials?.email || 'demo@jawsense.ai'
+        const email = credentials?.email || 'demo@sleepsense.ai'
         const name = credentials?.name || 'Demo User'
         return {
           id: Buffer.from(email).toString('base64').slice(0, 16),
@@ -41,5 +41,5 @@ export const authOptions: NextAuthOptions = {
       return session
     },
   },
-  secret: process.env.NEXTAUTH_SECRET || 'jawsense-dev-secret-change-in-production',
+  secret: process.env.NEXTAUTH_SECRET || 'sleepsense-dev-secret-change-in-production',
 }

@@ -304,7 +304,7 @@ export function reportToPlainText(r: ReportRecord): string {
     r.sleepQualityScore < 60 ? 'Moderate' :
     r.sleepQualityScore < 80 ? 'Mild' : 'Minimal'
 
-  return `JAWSENSE SESSION REPORT
+  return `SLEEPSENSE SESSION REPORT
 ========================
 Duration: ${formatDuration(r.duration)}
 Date: ${new Date(r.createdAt).toLocaleDateString()}
@@ -348,7 +348,7 @@ export function buildSensorDataDump(data: SensorPoint[], stats: LiveStats): stri
   const hrBase = hrValues.length ? median(hrValues) : 0
   const hrVar = hrValues.length ? stdDev(hrValues) : 0
 
-  let dump = `JAWSENSE LIVE SENSOR DATA
+  let dump = `SLEEPSENSE LIVE SENSOR DATA
 ========================
 Session Duration: ${durationMin} minutes
 Total Data Points: ${data.length}

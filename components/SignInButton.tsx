@@ -4,7 +4,7 @@ import { useState } from 'react'
 
 export default function SignInButton() {
   const [showMock, setShowMock] = useState(false)
-  const [email, setEmail]       = useState('demo@jawsense.ai')
+  const [email, setEmail]       = useState('demo@sleepsense.ai')
   const [name, setName]         = useState('Demo User')
   const [loading, setLoading]   = useState(false)
 

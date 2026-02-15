@@ -3,7 +3,7 @@ import './globals.css'
 import { Providers } from './providers'
 
 export const metadata: Metadata = {
-  title: 'JawSense – Sleep & Clenching Analytics',
+  title: 'SleepSense – Sleep & Clenching Analytics',
   description: 'Monitor and analyze sleep bruxism and stress-related jaw clenching',
 }
 

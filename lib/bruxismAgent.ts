@@ -53,7 +53,7 @@ const TOOLS = [
     function: {
       name: 'confirm_booking',
       description:
-        'Confirm an appointment booking with a selected clinic. The JawSense sensor report and the full analysis chat thread will be prepared and shared with the clinic.',
+        'Confirm an appointment booking with a selected clinic. The SleepSense sensor report and the full analysis chat thread will be prepared and shared with the clinic.',
       parameters: {
         type: 'object',
         properties: {
@@ -96,7 +96,7 @@ export class BruxismAgent {
   }
 
   private buildSystemPrompt(sensorDataDump: string): string {
-    return `You are a board-certified bruxism and sleep medicine specialist embedded in the JawSense wearable monitoring system. You analyze real patient sensor data and provide clinical-grade insights.
+    return `You are a board-certified bruxism and sleep medicine specialist embedded in the SleepSense wearable monitoring system. You analyze real patient sensor data and provide clinical-grade insights.
 
 PATIENT'S SENSOR DATA:
 
@@ -157,7 +157,7 @@ When the user's analysis questions seem answered and the conversation is wrappin
 3. Use the search_clinics function to find nearby specialists. NEVER invent clinic names or addresses — always use the function.
 4. Present the top results clearly with name, address, and rating.
 5. When the user selects a clinic, ask for their preferred appointment date/time.
-6. Use confirm_booking to finalize. Mention that the full JawSense sensor report and this analysis chat thread will be shared with the clinic so the doctor has complete context before the appointment.
+6. Use confirm_booking to finalize. Mention that the full SleepSense sensor report and this analysis chat thread will be shared with the clinic so the doctor has complete context before the appointment.
 7. After booking confirmation, summarize what was shared and wish the patient well.
 
 Respond naturally in conversation. The user may ask follow-up questions — maintain context and drill deeper when asked.`

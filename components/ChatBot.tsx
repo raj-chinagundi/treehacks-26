@@ -40,13 +40,14 @@ interface Props {
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const STORAGE_KEY = 'jawsense_openai_key'
+const STORAGE_KEY = 'sleepsense_openai_key'
+const ENV_KEY = process.env.NEXT_PUBLIC_OPENAI_API_KEY || ''
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function ChatBot({ liveStats, getRawData, report, sessionStatus, onClose }: Props) {
   const [messages, setMessages] = useState<ChatMsg[]>([])
-  const [phase, setPhase]       = useState<Phase>('api_key_input')
+  const [phase, setPhase]       = useState<Phase>(ENV_KEY ? 'ready' : 'api_key_input')
   const [typing, setTyping]     = useState(false)
   const [input, setInput]       = useState('')
   const [apiKeyDraft, setApiKeyDraft] = useState('')
@@ -67,13 +68,12 @@ export default function ChatBot({ liveStats, getRawData, report, sessionStatus, 
   // ── Check for stored key on mount ──────────────────────────────────────
 
   useEffect(() => {
-    const stored = sessionStorage.getItem(STORAGE_KEY)
-    if (stored) {
+    if (ENV_KEY || sessionStorage.getItem(STORAGE_KEY)) {
       setPhase('ready')
     }
     addMsg({
       role: 'assistant',
-      text: '👋 Welcome to JawSense AI. I\'m a bruxism specialist that can analyze your sensor data, identify clenching patterns, determine root causes, and recommend personalized relief steps.\n\nStart a session and ask me anything about your data.',
+      text: '👋 Welcome to SleepSense AI. I\'m a bruxism specialist that can analyze your sensor data, identify clenching patterns, determine root causes, and recommend personalized relief steps.\n\nStart a session and ask me anything about your data.',
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -132,10 +132,10 @@ export default function ChatBot({ liveStats, getRawData, report, sessionStatus, 
         status: 'confirmed',
         reportIncluded: true,
         chatThreadIncluded: true,
-        reportSummary: `JawSense Session — ${liveStatsRef.current.clenchCount} clench events, ${liveStatsRef.current.stressLikelihood}% stress-correlated, Sleep Quality ${liveStatsRef.current.sleepQualityScore}/100`,
+        reportSummary: `SleepSense Session — ${liveStatsRef.current.clenchCount} clench events, ${liveStatsRef.current.stressLikelihood}% stress-correlated, Sleep Quality ${liveStatsRef.current.sleepQualityScore}/100`,
         chatThreadMessages: messagesRef.current.length,
         sensorDataIncluded: true,
-        note: 'The full JawSense sensor report and this analysis chat thread have been prepared for sharing with the clinic.',
+        note: 'The full SleepSense sensor report and this analysis chat thread have been prepared for sharing with the clinic.',
       })
     }
 
@@ -156,7 +156,7 @@ export default function ChatBot({ liveStats, getRawData, report, sessionStatus, 
   // ── Create agent with latest sensor data ───────────────────────────────
 
   function ensureAgent(): BruxismAgent | null {
-    const key = sessionStorage.getItem(STORAGE_KEY)
+    const key = ENV_KEY || sessionStorage.getItem(STORAGE_KEY)
     if (!key) {
       setPhase('api_key_input')
       return null
@@ -216,7 +216,7 @@ export default function ChatBot({ liveStats, getRawData, report, sessionStatus, 
       <div className="chat-header flex-shrink-0">
         <div className="chat-header-dot" />
         <div className="flex-1">
-          <div className="chat-header-title">JawSense AI</div>
+          <div className="chat-header-title">SleepSense AI</div>
           <div className="chat-header-sub">Bruxism analysis &amp; clinical insights</div>
         </div>
         {onClose && (

@@ -33,7 +33,7 @@ export default async function LandingPage() {
 
         {/* Title */}
         <div>
-          <h1 className="text-3xl font-bold text-white tracking-tight">JawSense</h1>
+          <h1 className="text-3xl font-bold text-white tracking-tight">SleepSense</h1>
           <p className="mt-2 text-slate-400 text-sm">Sleep &amp; Clenching Analytics</p>
         </div>
 

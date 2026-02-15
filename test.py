@@ -1,5 +1,5 @@
 """
-JawSense Data Hub — Flask server that unifies two real-time sensor streams:
+SleepSense Data Hub — Flask server that unifies two real-time sensor streams:
 
   1. Heart Rate: wearable device POSTs to /data (unchanged from before)
   2. EMG:        ESP32 writes rows to Google Sheets → we poll for new rows
@@ -282,7 +282,7 @@ def reset():
 
 if __name__ == '__main__':
     print('─────────────────────────────────────────')
-    print('  JawSense Data Hub')
+    print('  SleepSense Data Hub')
     print('─────────────────────────────────────────')
     print(f'  HR input:   POST /data  (from wearable)')
     print(f'  EMG input:  Google Sheets col B (polled every {SHEET_POLL_SEC}s)')
