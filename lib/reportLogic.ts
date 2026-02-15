@@ -157,6 +157,110 @@ function detectClenchesExported(data: SensorPoint[]) {
   return detectClenches(data)
 }
 
+// ─── Classified clench events (for charts) ───────────────────────────────────
+
+export interface ClassifiedClenchEvent {
+  startMs: number
+  endMs: number
+  peakEMG: number
+  stressCorrelated: boolean
+}
+
+/**
+ * Detects clench events and classifies each as stress-correlated or not
+ * using a ±15s HR window — same logic as the report engine.
+ */
+export function classifyClenchEvents(data: SensorPoint[]): ClassifiedClenchEvent[] {
+  const clenches = detectClenches(data)
+  if (!clenches.length || !data.length) return []
+
+  const hrValues = data.map(d => d.hr)
+  const hrBaseline = median(hrValues)
+
+  return clenches.map(ev => {
+    const w = data.filter(d => d.t >= ev.startMs - HR_WINDOW_MS && d.t <= ev.endMs + HR_WINDOW_MS)
+    const hrElevated = w.length > 0 && Math.max(...w.map(d => d.hr)) > hrBaseline * (1 + HR_SPIKE_PCT)
+    return { startMs: ev.startMs, endMs: ev.endMs, peakEMG: ev.peakEMG, stressCorrelated: hrElevated }
+  })
+}
+
+// ─── Sensor data dump (for GPT-4o context) ───────────────────────────────────
+
+/**
+ * Builds a detailed plain-text dump of all sensor data and clench events
+ * for use as GPT-4o system prompt context.
+ */
+export function buildSensorDataDump(data: SensorPoint[], stats: LiveStats): string {
+  const events = classifyClenchEvents(data)
+  const stressEvents = events.filter(e => e.stressCorrelated)
+  const nonStressEvents = events.filter(e => !e.stressCorrelated)
+
+  const durationMs = data.length ? data[data.length - 1].t - data[0].t : 0
+  const durationMin = (durationMs / 60000).toFixed(1)
+
+  const hrValues = data.map(d => d.hr)
+  const hrBase = hrValues.length ? median(hrValues) : 0
+  const hrVar = hrValues.length ? stdDev(hrValues) : 0
+
+  let dump = `JAWSENSE LIVE SENSOR DATA
+========================
+Session Duration: ${durationMin} minutes
+Total Data Points: ${data.length}
+Sampling Rate: 10 Hz
+
+OVERALL STATISTICS
+──────────────────
+Total Clench Events: ${stats.clenchCount}
+  - Stress-Correlated: ${stressEvents.length} (HR elevated within ±15s)
+  - Non-Stress: ${nonStressEvents.length} (no HR elevation)
+Stress Correlation Rate: ${stats.stressLikelihood}%
+Sleep Quality Score: ${stats.sleepQualityScore}/100
+Average Heart Rate: ${stats.avgHR} bpm
+Peak EMG Amplitude: ${stats.peakEMG.toFixed(3)} µV
+Currently Clenching: ${stats.isClenching ? 'YES' : 'No'}
+
+CARDIAC BASELINE
+────────────────
+Median HR: ${hrBase.toFixed(1)} bpm
+HR Variability (σ): ${hrVar.toFixed(1)} bpm
+HR Spike Threshold: ${(hrBase * (1 + HR_SPIKE_PCT)).toFixed(1)} bpm (baseline + 6%)
+
+CLENCH EVENT LOG
+────────────────`
+
+  if (events.length === 0) {
+    dump += '\nNo clench events detected yet.\n'
+  } else {
+    events.forEach((ev, i) => {
+      const startSec = (ev.startMs / 1000).toFixed(1)
+      const endSec = (ev.endMs / 1000).toFixed(1)
+      const durSec = ((ev.endMs - ev.startMs) / 1000).toFixed(1)
+      const type = ev.stressCorrelated ? 'STRESS' : 'NON-STRESS'
+      const eventData = data.filter(d => d.t >= ev.startMs && d.t <= ev.endMs)
+      const hrDuring = eventData.map(d => d.hr)
+      const avgHrEv = hrDuring.length ? (hrDuring.reduce((a, b) => a + b, 0) / hrDuring.length).toFixed(1) : 'N/A'
+      const maxHrEv = hrDuring.length ? Math.max(...hrDuring).toFixed(1) : 'N/A'
+      dump += `\nEvent #${i + 1} [${type}]`
+      dump += `\n  Time: ${startSec}s → ${endSec}s (duration: ${durSec}s)`
+      dump += `\n  Peak EMG: ${ev.peakEMG.toFixed(3)} µV`
+      dump += `\n  HR during event: avg ${avgHrEv} bpm, max ${maxHrEv} bpm`
+    })
+  }
+
+  if (events.length >= 2) {
+    const half = Math.floor(events.length / 2)
+    const firstAvg = events.slice(0, half).reduce((a, e) => a + e.peakEMG, 0) / half
+    const secondAvg = events.slice(half).reduce((a, e) => a + e.peakEMG, 0) / (events.length - half)
+    const trend = secondAvg > firstAvg * 1.1 ? 'INCREASING' : secondAvg < firstAvg * 0.9 ? 'DECREASING' : 'STABLE'
+    dump += `\n\nTREND ANALYSIS\n──────────────`
+    dump += `\nClench Intensity Trend: ${trend}`
+    dump += `\n  First half avg peak: ${firstAvg.toFixed(3)} µV`
+    dump += `\n  Second half avg peak: ${secondAvg.toFixed(3)} µV`
+  }
+
+  return dump
+}
+
 export function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60)
   const s = seconds % 60

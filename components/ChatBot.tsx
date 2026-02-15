@@ -1,301 +1,112 @@
 'use client'
 
 /**
- * ChatBot — React port of chatbot.js + agent.js (NightGuard / JawSense)
+ * ChatBot — GPT-4o bruxism clinical analyst.
  *
- * Phase machine:
- *   idle           → welcome message, waiting for a session
- *   report_shown   → session report summary shown, offer to find specialist
- *   api_key_input  → user wants specialist search but no Gemini key stored
- *   gemini_active  → DentalAgent (Gemini 2.5 Flash + Google Search) driving conv.
- *   done           → booking confirmed or user declined
+ * Flow:
+ *   1. User opens chat
+ *   2. If no OpenAI API key → show key input
+ *   3. System prompt = clinical analyst persona + full sensor data dump
+ *   4. User asks anything → GPT-4o reasons over data → responds
+ *   5. Multi-turn conversation
  *
- * Renders as a floating popup panel in the bottom-right corner of the dashboard.
+ * No tools. No search. No function calling.
+ * The data is already in context and the reasoning is what GPT-4o is good at.
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { ReportRecord } from '@/types'
-import { DentalAgent, DentalOption, GroundingInfo, AgentTurn } from '@/lib/dentalAgent'
-import { reportToPlainText, generateBullets } from '@/lib/reportLogic'
+import { SensorPoint } from '@/types'
+import { LiveStats, buildSensorDataDump } from '@/lib/reportLogic'
+import { BruxismAgent } from '@/lib/bruxismAgent'
 import { v4 as uuid } from 'uuid'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type Phase = 'idle' | 'report_shown' | 'api_key_input' | 'gemini_active' | 'done'
+type Phase = 'api_key_input' | 'ready' | 'active'
 
 interface ChatMsg {
   id: string
   role: 'user' | 'assistant'
   text: string
-  options?: DentalOption[]
-  optionsDone?: boolean
-  selectedValue?: string
-  grounding?: GroundingInfo
-  isReportCard?: boolean
-  reportCardHtml?: string
 }
 
 interface Props {
-  report: ReportRecord | null
-  sessionStatus: 'idle' | 'recording' | 'analyzing' | 'report_ready'
-  onBookingCreated?: (data: {
-    providerName: string
-    providerType: string
-    appointmentTime: string
-    address: string
-    reportId: string
-  }) => void
+  liveStats: LiveStats
+  getRawData: () => SensorPoint[]
+  sessionStatus: 'idle' | 'recording' | 'report_ready'
   onClose?: () => void
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Constants ───────────────────────────────────────────────────────────────
 
-const STORAGE_KEY = 'jawsense_gemini_key'
-
-function buildReportCardHtml(report: ReportRecord): string {
-  const bullets = generateBullets(report)
-  const scoreColor =
-    report.sleepQualityScore >= 75 ? '#22c55e' :
-    report.sleepQualityScore >= 50 ? '#f59e0b' : '#ef4444'
-  const severity =
-    report.sleepQualityScore < 40 ? 'Severe' :
-    report.sleepQualityScore < 60 ? 'Moderate' :
-    report.sleepQualityScore < 80 ? 'Mild' : 'Minimal'
-
-  return `
-    <div class="wearable-report-card">
-      <div class="report-header-row">
-        <div class="report-logo">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
-          </svg>
-        </div>
-        <div>
-          <div class="report-title">JawSense Session Report</div>
-          <div class="report-subtitle">Generated ${new Date(report.createdAt).toLocaleDateString()}</div>
-        </div>
-      </div>
-      <div class="report-severity-badge" style="background:${scoreColor}18;color:${scoreColor};border:1px solid ${scoreColor}40">
-        <span class="severity-dot" style="background:${scoreColor}"></span>
-        ${severity} · Sleep Quality ${report.sleepQualityScore}/100
-      </div>
-      <div class="report-grid">
-        <div class="report-stat">
-          <div class="report-stat-value">${report.clenchCount}</div>
-          <div class="report-stat-label">Clench Events</div>
-        </div>
-        <div class="report-stat">
-          <div class="report-stat-value">${report.stressLikelihood}<span class="unit">%</span></div>
-          <div class="report-stat-label">Stress-Associated</div>
-        </div>
-        <div class="report-stat">
-          <div class="report-stat-value">${report.avgHR}<span class="unit">bpm</span></div>
-          <div class="report-stat-label">Avg Heart Rate</div>
-        </div>
-        <div class="report-stat">
-          <div class="report-stat-value">${report.avgTemp}<span class="unit">°C</span></div>
-          <div class="report-stat-label">Avg Temperature</div>
-        </div>
-      </div>
-      <div class="report-footer">JawSense v1.0 · For clinical reference · ${new Date().toLocaleString()}</div>
-    </div>
-  `
-}
+const STORAGE_KEY = 'jawsense_openai_key'
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
-export default function ChatBot({ report, sessionStatus, onBookingCreated, onClose }: Props) {
+export default function ChatBot({ liveStats, getRawData, sessionStatus, onClose }: Props) {
   const [messages, setMessages] = useState<ChatMsg[]>([])
-  const [phase, setPhase]       = useState<Phase>('idle')
+  const [phase, setPhase]       = useState<Phase>('api_key_input')
   const [typing, setTyping]     = useState(false)
   const [input, setInput]       = useState('')
   const [apiKeyDraft, setApiKeyDraft] = useState('')
 
-  const agentRef   = useRef<DentalAgent | null>(null)
-  const bottomRef  = useRef<HTMLDivElement>(null)
-  const phaseRef   = useRef<Phase>('idle')
-  const reportRef  = useRef<ReportRecord | null>(null)
+  const agentRef  = useRef<BruxismAgent | null>(null)
+  const bottomRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => { phaseRef.current = phase }, [phase])
-  useEffect(() => { reportRef.current = report }, [report])
-
-  // ── Helpers ──────────────────────────────────────────────────────────────
-
-  const addMsg = useCallback((msg: Omit<ChatMsg, 'id'>) => {
-    setMessages(prev => [...prev, { id: uuid(), ...msg }])
-  }, [])
-
-  const disableOptionsInMsg = useCallback((msgId: string, chosen: string) => {
-    setMessages(prev =>
-      prev.map(m =>
-        m.id === msgId
-          ? { ...m, optionsDone: true, selectedValue: chosen }
-          : m
-      )
-    )
-  }, [])
-
-  // ── Welcome on mount ──────────────────────────────────────────────────────
+  // ── Check for stored key on mount ──────────────────────────────────────
 
   useEffect(() => {
+    const stored = sessionStorage.getItem(STORAGE_KEY)
+    if (stored) {
+      setPhase('ready')
+    }
     addMsg({
       role: 'assistant',
-      text: '👋 Welcome to JawSense! Start a session to begin monitoring. When your session is complete, I\'ll summarize the results and can connect you with a dental specialist nearby.',
+      text: '👋 Welcome to JawSense AI. I\'m a bruxism specialist that can analyze your sensor data, identify clenching patterns, determine root causes, and recommend personalized relief steps.\n\nStart a session and ask me anything about your data.',
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // ── Auto-scroll ───────────────────────────────────────────────────────────
+  // ── Auto-scroll ─────────────────────────────────────────────────────────
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, typing])
 
-  // ── React to new report ───────────────────────────────────────────────────
+  // ── Helpers ─────────────────────────────────────────────────────────────
 
-  useEffect(() => {
-    if (!report) return
-    if (phaseRef.current !== 'idle') return
+  const addMsg = useCallback((msg: Omit<ChatMsg, 'id'>) => {
+    setMessages(prev => [...prev, { id: uuid(), ...msg }])
+  }, [])
 
-    const bullets = generateBullets(report)
-    const summaryLines = bullets.map(b => `• ${b}`).join('\n')
+  // ── API key submit ──────────────────────────────────────────────────────
 
-    addMsg({ role: 'assistant', text: `📊 **Session Report Ready**\n\n${summaryLines}` })
-
-    const hasConcern =
-      report.clenchCount > 5 || report.stressLikelihood > 50 || report.sleepQualityScore < 60
-
-    const offerMsg: Omit<ChatMsg, 'id'> = {
-      role: 'assistant',
-      text: hasConcern
-        ? `Based on your results I notice some areas of concern — especially your clench count (${report.clenchCount}) and stress likelihood (${report.stressLikelihood}%). **Would you like me to find a dentist or sleep specialist?**\n\n_(Powered by Gemini + Google Search — Gemini API key required)_`
-        : `Your results look relatively healthy! **Would you like help finding a dentist or sleep specialist for a follow-up check?**\n\n_(Powered by Gemini + Google Search — Gemini API key required)_`,
-      options: [
-        { label: 'Yes, find me a specialist', subtitle: 'Uses Gemini AI + live Google Search', value: 'find_specialist' },
-        { label: 'No thanks',                 subtitle: 'Skip for now',                        value: 'decline' },
-      ],
-    }
-
-    setTimeout(() => {
-      addMsg(offerMsg)
-      setPhase('report_shown')
-    }, 600)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [report])
-
-  // ── Option button click ───────────────────────────────────────────────────
-
-  async function handleOptionClick(msgId: string, opt: DentalOption) {
-    disableOptionsInMsg(msgId, opt.value)
-    addMsg({ role: 'user', text: opt.label })
-
-    if (phaseRef.current === 'report_shown') {
-      if (opt.value === 'decline') {
-        addMsg({ role: 'assistant', text: 'No problem! Feel free to start another session anytime. I\'ll be here when you\'re ready.' })
-        setPhase('done')
-        return
-      }
-      if (opt.value === 'find_specialist') {
-        const stored = sessionStorage.getItem(STORAGE_KEY) ?? ''
-        if (stored) {
-          await startGemini(stored)
-        } else {
-          setPhase('api_key_input')
-          addMsg({
-            role: 'assistant',
-            text: '🔑 To search for real clinics I need your **Gemini API key** (free at aistudio.google.com).\n\nIt stays in your browser and is never sent to our server.',
-          })
-        }
-        return
-      }
-    }
-
-    if (phaseRef.current === 'gemini_active') {
-      await sendToGemini(opt.label)
-    }
+  function handleApiKeySubmit() {
+    const key = apiKeyDraft.trim()
+    if (!key) return
+    sessionStorage.setItem(STORAGE_KEY, key)
+    setApiKeyDraft('')
+    setPhase('ready')
+    addMsg({ role: 'assistant', text: '🔒 API key saved for this session. You can now ask me about your data.' })
   }
 
-  // ── Initialise DentalAgent and kick off conversation ──────────────────────
+  // ── Create agent with latest sensor data ───────────────────────────────
 
-  async function startGemini(key: string) {
-    const r = reportRef.current
-    if (!r) return
-    const agent = new DentalAgent(key, reportToPlainText(r))
-    agentRef.current = agent
-    setPhase('gemini_active')
-
-    setTyping(true)
-    try {
-      const turn = await agent.processMessage(
-        'Hello, I would like help finding a dental specialist based on my JawSense session data.'
-      )
-      setTyping(false)
-      renderAgentTurn(turn)
-    } catch (err) {
-      setTyping(false)
-      const msg = err instanceof Error ? err.message : 'Unknown error'
-      addMsg({ role: 'assistant', text: `⚠️ Error connecting to Gemini: ${msg}\n\nPlease check your API key and try again.` })
+  function ensureAgent(): BruxismAgent | null {
+    const key = sessionStorage.getItem(STORAGE_KEY)
+    if (!key) {
       setPhase('api_key_input')
+      return null
     }
+    if (!agentRef.current) {
+      const rawData = getRawData()
+      const dump = buildSensorDataDump(rawData, liveStats)
+      agentRef.current = new BruxismAgent(key, dump)
+    }
+    return agentRef.current
   }
 
-  // ── Send text to DentalAgent ──────────────────────────────────────────────
-
-  async function sendToGemini(text: string) {
-    if (!agentRef.current) return
-    setTyping(true)
-    try {
-      const turn = await agentRef.current.processMessage(text)
-      setTyping(false)
-      renderAgentTurn(turn)
-    } catch (err) {
-      setTyping(false)
-      addMsg({ role: 'assistant', text: `⚠️ ${err instanceof Error ? err.message : 'Request failed'}` })
-    }
-  }
-
-  // ── Render a Gemini AgentTurn ─────────────────────────────────────────────
-
-  function renderAgentTurn(turn: AgentTurn) {
-    const { response, grounding } = turn
-
-    const isCard = response.showReport && reportRef.current != null
-    const cardHtml = isCard ? buildReportCardHtml(reportRef.current!) : undefined
-
-    addMsg({
-      role: 'assistant',
-      text: response.message,
-      options: response.options.length ? response.options : undefined,
-      grounding,
-      isReportCard: isCard,
-      reportCardHtml: cardHtml,
-    })
-
-    if (response.bookingConfirmed) {
-      setPhase('done')
-      const lastBooking = extractLastBooking()
-      if (lastBooking && reportRef.current && onBookingCreated) {
-        onBookingCreated({ ...lastBooking, reportId: reportRef.current.id })
-      }
-    }
-  }
-
-  function extractLastBooking() {
-    const msgs = [...messages].reverse()
-    for (const m of msgs) {
-      if (m.role === 'user' && m.text) {
-        return {
-          providerName: m.text,
-          providerType: 'dentist',
-          appointmentTime: '',
-          address: '',
-        }
-      }
-    }
-    return null
-  }
-
-  // ── Text input send ────────────────────────────────────────────────────────
+  // ── Send message ────────────────────────────────────────────────────────
 
   async function handleSend() {
     const text = input.trim()
@@ -303,26 +114,33 @@ export default function ChatBot({ report, sessionStatus, onBookingCreated, onClo
     setInput('')
     addMsg({ role: 'user', text })
 
-    if (phase === 'gemini_active') {
-      await sendToGemini(text)
+    const agent = ensureAgent()
+    if (!agent) {
+      addMsg({ role: 'assistant', text: '⚠️ Please enter your OpenAI API key first.' })
+      return
+    }
+
+    setPhase('active')
+    setTyping(true)
+    try {
+      const reply = await agent.sendMessage(text)
+      setTyping(false)
+      addMsg({ role: 'assistant', text: reply })
+    } catch (err) {
+      setTyping(false)
+      const msg = err instanceof Error ? err.message : 'Request failed'
+      addMsg({ role: 'assistant', text: `⚠️ ${msg}` })
+      if (msg.includes('401') || msg.includes('invalid')) {
+        sessionStorage.removeItem(STORAGE_KEY)
+        agentRef.current = null
+        setPhase('api_key_input')
+      }
     }
   }
 
-  // ── API key submit ─────────────────────────────────────────────────────────
+  // ── Input state ─────────────────────────────────────────────────────────
 
-  async function handleApiKeySubmit() {
-    const key = apiKeyDraft.trim()
-    if (!key) return
-    sessionStorage.setItem(STORAGE_KEY, key)
-    setApiKeyDraft('')
-    addMsg({ role: 'user', text: '(API key submitted)' })
-    addMsg({ role: 'assistant', text: '🔒 Key saved for this session. Connecting to Gemini AI…' })
-    await startGemini(key)
-  }
-
-  // ── Input area ─────────────────────────────────────────────────────────────
-
-  const inputDisabled = sessionStatus === 'recording' || sessionStatus === 'analyzing' || typing
+  const inputDisabled = typing
 
   // ─────────────────────────────────────────────────────────────────────────
   // Render
@@ -336,7 +154,7 @@ export default function ChatBot({ report, sessionStatus, onBookingCreated, onClo
         <div className="chat-header-dot" />
         <div className="flex-1">
           <div className="chat-header-title">JawSense AI</div>
-          <div className="chat-header-sub">Find dentists &amp; book appointments</div>
+          <div className="chat-header-sub">Bruxism analysis &amp; clinical insights</div>
         </div>
         {onClose && (
           <button onClick={onClose} className="text-slate-500 hover:text-slate-300 transition-colors p-1">
@@ -350,11 +168,9 @@ export default function ChatBot({ report, sessionStatus, onBookingCreated, onClo
       {/* Messages */}
       <div className="chat-messages">
         {messages.map(msg => (
-          <MessageRow
-            key={msg.id}
-            msg={msg}
-            onOptionClick={handleOptionClick}
-          />
+          <div key={msg.id} className={`msg ${msg.role}`}>
+            <RichText text={msg.text} />
+          </div>
         ))}
 
         {typing && (
@@ -374,17 +190,17 @@ export default function ChatBot({ report, sessionStatus, onBookingCreated, onClo
             value={apiKeyDraft}
             onChange={e => setApiKeyDraft(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && handleApiKeySubmit()}
-            placeholder="Paste Gemini API key…"
+            placeholder="Paste OpenAI API key…"
             className="w-full border border-slate-600 rounded-xl px-3 py-2 text-xs bg-slate-800 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
           />
           <div className="flex gap-2 items-center">
             <a
-              href="https://aistudio.google.com/app/apikey"
+              href="https://platform.openai.com/api-keys"
               target="_blank"
               rel="noreferrer"
               className="text-xs text-cyan-400 hover:underline flex-1"
             >
-              Get free key →
+              Get API key →
             </a>
             <button
               onClick={handleApiKeySubmit}
@@ -409,11 +225,9 @@ export default function ChatBot({ report, sessionStatus, onBookingCreated, onClo
               if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() }
             }}
             placeholder={
-              inputDisabled && sessionStatus !== 'report_ready'
-                ? 'Session in progress…'
-                : phase === 'done'
-                ? 'Booking complete ✓'
-                : 'Ask about your results…'
+              inputDisabled
+                ? 'Analyzing…'
+                : 'Ask about your data…'
             }
             disabled={inputDisabled}
           />
@@ -434,70 +248,7 @@ export default function ChatBot({ report, sessionStatus, onBookingCreated, onClo
   )
 }
 
-// ─── Sub-component: one row in the message list ───────────────────────────────
-
-function MessageRow({
-  msg,
-  onOptionClick,
-}: {
-  msg: ChatMsg
-  onOptionClick: (msgId: string, opt: DentalOption) => void
-}) {
-  return (
-    <>
-      <div className={`msg ${msg.role}`}>
-        <RichText text={msg.text} />
-      </div>
-
-      {msg.isReportCard && msg.reportCardHtml && (
-        <div
-          className="msg-card"
-          dangerouslySetInnerHTML={{ __html: msg.reportCardHtml }}
-        />
-      )}
-
-      {msg.options && msg.options.length > 0 && (
-        <div className="msg-buttons">
-          {msg.options.map(opt => (
-            <button
-              key={opt.value}
-              className={`msg-option-btn ${msg.optionsDone && msg.selectedValue === opt.value ? 'selected' : ''}`}
-              disabled={!!msg.optionsDone}
-              onClick={() => onOptionClick(msg.id, opt)}
-            >
-              <span className="msg-option-label">{opt.label}</span>
-              {opt.subtitle && <span className="msg-option-sub">{opt.subtitle}</span>}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {msg.grounding && (
-        <div className={`grounding-badge ${msg.grounding.verified ? 'verified' : 'unverified'}`}>
-          <span className="grounding-icon">{msg.grounding.verified ? '✓' : '⚠️'}</span>
-          <div>
-            <strong>{msg.grounding.verified ? 'Verified via Google Search' : 'No Google Search used'}</strong>
-            {msg.grounding.verified && msg.grounding.searchQueries.length > 0 && (
-              <div className="grounding-queries">
-                Searched: {msg.grounding.searchQueries.join(' · ')}
-              </div>
-            )}
-            {msg.grounding.verified && msg.grounding.sources.length > 0 && (
-              <div className="grounding-sources">
-                {msg.grounding.sources.slice(0, 3).map((s, i) => (
-                  <span key={i}>
-                    <a href={s.uri} target="_blank" rel="noreferrer">{s.title}</a>
-                    {i < Math.min(msg.grounding!.sources.length, 3) - 1 && ' · '}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-    </>
-  )
-}
+// ─── Sub-component: rich text with bold support ────────────────────────────────
 
 function RichText({ text }: { text: string }) {
   const lines = text.split('\n')

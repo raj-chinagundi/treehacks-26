@@ -4,10 +4,9 @@ import { useState, useEffect, useRef } from 'react'
 import { signOut } from 'next-auth/react'
 import { SensorPoint, ReportRecord, SessionRecord } from '@/types'
 import { createSensorState, generatePoint, SensorState } from '@/lib/mockSensor'
-import { generateBullets, computeLiveStats, LiveStats } from '@/lib/reportLogic'
-import EMGChart   from './charts/EMGChart'
-import HRChart    from './charts/HRChart'
-import MainChart  from './charts/MainChart'
+import { generateBullets, computeLiveStats, LiveStats, classifyClenchEvents, ClassifiedClenchEvent } from '@/lib/reportLogic'
+import StressClenchChart    from './charts/StressClenchChart'
+import NonStressClenchChart from './charts/NonStressClenchChart'
 import ReportBox  from './ReportBox'
 import ChatBot    from './ChatBot'
 import StatusBadge from './StatusBadge'
@@ -17,8 +16,7 @@ import StatusBadge from './StatusBadge'
 const SENSOR_HZ      = 100  // ms per tick = 10 Hz
 const CHART_UPDATE   = 200  // ms between chart state updates
 const ANALYSIS_HZ    = 1000 // ms between live analysis recompute
-const DISPLAY_WINDOW = 200  // points shown in small charts (20 s)
-const MAIN_WINDOW    = 400  // points shown in main chart  (40 s)
+const DISPLAY_WINDOW = 200  // points shown in charts (20 s)
 
 const FLASK_SSE_URL  = 'http://localhost:5001/stream'
 
@@ -48,6 +46,7 @@ export default function Dashboard({ user }: { user: User }) {
   const [saving,         setSaving]         = useState(false)
   const [clenchFlash,    setClenchFlash]    = useState(false)
   const [deviceConnected, setDeviceConnected] = useState(false)
+  const [clenchEvents,   setClenchEvents]   = useState<ClassifiedClenchEvent[]>([])
 
   const rawBuf        = useRef<SensorPoint[]>([])
   const sensorState   = useRef<SensorState | null>(null)
@@ -141,7 +140,7 @@ export default function Dashboard({ user }: { user: User }) {
     // 5 Hz chart refresh
     chartTimer.current = setInterval(() => {
       const buf = rawBuf.current
-      setChartData([...buf.slice(-Math.max(DISPLAY_WINDOW, MAIN_WINDOW))])
+      setChartData([...buf.slice(-DISPLAY_WINDOW)])
     }, CHART_UPDATE)
 
     // 1 Hz timer display
@@ -155,6 +154,7 @@ export default function Dashboard({ user }: { user: User }) {
       if (!buf.length) return
       const stats = computeLiveStats(buf)
       setLiveStats(stats)
+      setClenchEvents(classifyClenchEvents(buf))
 
       if (stats.isClenching && !prevClenching.current) {
         setClenchFlash(true)
@@ -182,6 +182,7 @@ export default function Dashboard({ user }: { user: User }) {
 
     if (rawBuf.current.length) {
       setLiveStats(computeLiveStats(rawBuf.current))
+      setClenchEvents(classifyClenchEvents(rawBuf.current))
     }
     setAppStatus('disconnected')
   }
@@ -233,34 +234,10 @@ export default function Dashboard({ user }: { user: User }) {
         if (s.dataPoints) {
           setChartData(s.dataPoints)
           setLiveStats(computeLiveStats(s.dataPoints))
+          setClenchEvents(classifyClenchEvents(s.dataPoints))
         }
       }
       setAppStatus('report_ready')
-    } catch { /* silent */ }
-  }
-
-  // ── Booking created callback ─────────────────────────────────────────
-
-  async function handleBookingCreated(data: {
-    providerName: string
-    providerType: string
-    appointmentTime: string
-    address: string
-    reportId: string
-  }) {
-    try {
-      await fetch('/api/bookings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          reportId:        data.reportId,
-          providerName:    data.providerName,
-          providerType:    data.providerType || 'dentist',
-          appointmentTime: data.appointmentTime,
-          address:         data.address,
-          city:            '',
-        }),
-      })
     } catch { /* silent */ }
   }
 
@@ -271,7 +248,6 @@ export default function Dashboard({ user }: { user: User }) {
 
   const bullets = report ? generateBullets(report) : []
   const sideData = chartData.slice(-DISPLAY_WINDOW)
-  const mainData = chartData.slice(-MAIN_WINDOW)
 
   const latestHR = sideData.length ? sideData[sideData.length - 1].hr : 0
   const latestEMG = sideData.length ? sideData[sideData.length - 1].emg : 0
@@ -417,16 +393,10 @@ export default function Dashboard({ user }: { user: User }) {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <div className="bg-slate-800/60 rounded-xl p-3">
               <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium">Clench Events</p>
               <p className="text-xl font-bold text-white mt-0.5 tabular-nums">{liveStats.clenchCount}</p>
-            </div>
-            <div className="bg-slate-800/60 rounded-xl p-3">
-              <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium">Stress Level</p>
-              <p className={`text-xl font-bold mt-0.5 tabular-nums ${
-                liveStats.stressLikelihood > 50 ? 'text-rose-400' : liveStats.stressLikelihood > 25 ? 'text-amber-400' : 'text-emerald-400'
-              }`}>{liveStats.stressLikelihood}%</p>
             </div>
             <div className="bg-slate-800/60 rounded-xl p-3">
               <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium">Sleep Quality</p>
@@ -441,10 +411,6 @@ export default function Dashboard({ user }: { user: User }) {
             <div className="bg-slate-800/60 rounded-xl p-3">
               <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium">Avg Heart Rate</p>
               <p className="text-xl font-bold text-orange-400 mt-0.5 tabular-nums">{liveStats.avgHR || '—'} <span className="text-xs font-normal text-slate-500">bpm</span></p>
-            </div>
-            <div className="bg-slate-800/60 rounded-xl p-3">
-              <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium">Avg Temp</p>
-              <p className="text-xl font-bold text-violet-400 mt-0.5 tabular-nums">{liveStats.avgTemp || '—'} <span className="text-xs font-normal text-slate-500">°C</span></p>
             </div>
           </div>
         </div>
@@ -474,45 +440,33 @@ export default function Dashboard({ user }: { user: User }) {
           </div>
         </div>
 
-        {/* ── Two Main Charts (Heart Rate + EMG) ─────────────────────── */}
+        {/* ── Two Main Charts (Stress Clenching + Non-Stress Clenching) ── */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 lg:gap-6">
           <div className="bg-slate-900/60 backdrop-blur rounded-2xl border border-slate-800 p-5">
             <div className="flex items-center justify-between mb-3">
               <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-orange-400"></span>
-                Heart Rate
-                {isConnected && deviceConnected && (
-                  <span className="text-[9px] text-emerald-400 font-medium bg-emerald-500/10 px-1.5 py-0.5 rounded">DEVICE</span>
-                )}
+                <span className="w-2 h-2 rounded-full bg-rose-400"></span>
+                Stress-Caused Clenching
               </p>
-              {latestHR > 0 && (
-                <span className="text-xs text-orange-400 font-mono tabular-nums">{latestHR.toFixed(0)} bpm</span>
+              {liveStats.stressLikelihood > 0 && (
+                <span className="text-xs text-rose-400 font-mono tabular-nums">{liveStats.stressLikelihood}% correlated</span>
               )}
             </div>
-            <HRChart data={sideData} />
+            <StressClenchChart data={sideData} events={clenchEvents} />
           </div>
 
           <div className="bg-slate-900/60 backdrop-blur rounded-2xl border border-slate-800 p-5">
             <div className="flex items-center justify-between mb-3">
               <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide flex items-center gap-2">
-                <span className={`w-2 h-2 rounded-full ${liveStats.isClenching ? 'bg-rose-400 animate-pulse' : 'bg-cyan-400'}`}></span>
-                EMG Signal
-                <span className="text-slate-600 font-normal">(threshold ···)</span>
+                <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+                Non-Stress Clenching
               </p>
-              {latestEMG > 0 && (
-                <span className={`text-xs font-mono tabular-nums ${liveStats.isClenching ? 'text-rose-400' : 'text-cyan-400'}`}>{latestEMG.toFixed(3)} µV</span>
+              {liveStats.stressLikelihood < 100 && liveStats.clenchCount > 0 && (
+                <span className="text-xs text-amber-400 font-mono tabular-nums">{100 - liveStats.stressLikelihood}% non-stress</span>
               )}
             </div>
-            <EMGChart data={sideData} />
+            <NonStressClenchChart data={sideData} events={clenchEvents} />
           </div>
-        </div>
-
-        {/* ── Combined Sensor Overview ─────────────────────────────────── */}
-        <div className="bg-slate-900/60 backdrop-blur rounded-2xl border border-slate-800 p-5">
-          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">
-            {isConnected ? 'Live Sensor Overview' : 'Sensor Overview'}
-          </p>
-          <MainChart data={mainData} />
         </div>
 
         {/* ── Saved Report Section ─────────────────────────────────────── */}
@@ -524,9 +478,9 @@ export default function Dashboard({ user }: { user: User }) {
       {chatOpen && (
         <div className="fixed bottom-20 right-6 z-50 w-[380px] h-[520px] bg-slate-900 rounded-2xl border border-slate-700 shadow-2xl shadow-black/40 flex flex-col overflow-hidden animate-in">
           <ChatBot
-            report={report}
+            liveStats={liveStats}
+            getRawData={() => rawBuf.current}
             sessionStatus={chatSessionStatus}
-            onBookingCreated={handleBookingCreated}
             onClose={() => setChatOpen(false)}
           />
         </div>
