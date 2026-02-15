@@ -1,29 +1,62 @@
 import { SensorPoint, ReportRecord } from '@/types'
 import { v4 as uuid } from 'uuid'
 
-// ─── Constants ───────────────────────────────────────────────────────────────
+// ─── ADC Thresholds (from hardware team) ─────────────────────────────────────
+//
+//   EMG values arrive as raw 12-bit ADC counts (0–4095).
+//   Flask streams them as-is — no voltage conversion.
+//
+//   Activity thresholds (ADC):
+//     Below 165  → Relaxed
+//     165–250    → Talking / Conversation
+//     Above 250  → Clenching
+//     1024       → 100 % intensity cap (anything above also 100 %)
 
-const EMG_THRESHOLD      = 0.5
+const EMG_RELAXED_ADC = 165
+const EMG_TALKING_ADC = 250
+const EMG_MAX_ADC     = 1024   // 100 % ceiling
+
+// ─── Detection Constants ─────────────────────────────────────────────────────
+
+const EMG_THRESHOLD      = EMG_TALKING_ADC   // clenching starts here (raw ADC)
 const MIN_CLENCH_MS      = 400
-const PRECEDE_WINDOW_MS  = 15_000   // look up to 15 s before clench start
-const PRECEDE_GAP_MS     = 500      // must precede by at least 0.5 s
-const ACTIVATION_PRECEDE  = 5       // 5 % activation to count as preceding arousal
-const AROUSAL_DETECT_PCT = 12       // 12 % activation to detect standalone arousal peaks
-const AROUSAL_MIN_MS     = 2000     // 2 s minimum for arousal peak detection
-const AROUSAL_FOLLOW_MS  = 15_000   // check for clench within 15 s after arousal peak
+const PRECEDE_WINDOW_MS  = 15_000
+const PRECEDE_GAP_MS     = 500
+const ACTIVATION_PRECEDE = 5       // 5 % activation to count as preceding arousal
+const AROUSAL_DETECT_PCT = 12      // 12 % activation for standalone arousal peaks
+const AROUSAL_MIN_MS     = 2000
+const AROUSAL_FOLLOW_MS  = 15_000
 
 // ─── Signal Transforms ──────────────────────────────────────────────────────
 
 /**
- * Converts raw EMG (µV) to Jaw Pressure Index (0–10).
- *
- * Bands: 0-2 Relaxed · 2-4 Tense · 4-7 Clenching · 7-10 Grinding
+ * Converts raw ADC to 0–100 % intensity.
+ * 0 → 0 %, 1024 → 100 %, anything above 1024 → 100 %.
  */
-export function emgToJPI(emg: number): number {
-  if (emg <= 0.15) return (emg / 0.15) * 2
-  if (emg <= 0.5)  return 2 + ((emg - 0.15) / 0.35) * 2
-  if (emg <= 1.5)  return 4 + ((emg - 0.5) / 1.0) * 3
-  return Math.min(10, 7 + ((emg - 1.5) / 1.5) * 3)
+export function emgToIntensity(adc: number): number {
+  if (adc <= 0) return 0
+  return Math.min(100, (adc / EMG_MAX_ADC) * 100)
+}
+
+/**
+ * Classifies raw ADC into one of three activity categories.
+ */
+export function emgToCategory(adc: number): 'relaxed' | 'talking' | 'clenching' {
+  if (adc < EMG_RELAXED_ADC) return 'relaxed'
+  if (adc < EMG_TALKING_ADC) return 'talking'
+  return 'clenching'
+}
+
+/**
+ * Maps raw ADC to a discrete 1/2/3 level for the step chart.
+ *   1 = Relaxed   (ADC < 165)
+ *   2 = Talking    (ADC 165–250)
+ *   3 = Clenching  (ADC > 250)
+ */
+export function emgToLevel(adc: number): number {
+  if (adc < EMG_RELAXED_ADC) return 1
+  if (adc < EMG_TALKING_ADC) return 2
+  return 3
 }
 
 /**
@@ -82,9 +115,9 @@ export interface ClassifiedClenchEvent {
   endMs: number
   peakEMG: number
   type: 'arousal-linked' | 'isolated'
-  peakJPI: number
+  peakIntensity: number    // 0–100 %
   durationSec: number
-  severityLabel: string
+  severityLabel: string    // Mild, Moderate, Severe
 }
 
 export interface ArousalOnlyEvent {
@@ -94,7 +127,7 @@ export interface ArousalOnlyEvent {
 }
 
 /**
- * Classifies clench events by temporal relationship with nervous system activation.
+ * Classifies bruxating events by temporal relationship with nervous system activation.
  * Also detects arousal-only events (nervous system spike with no subsequent clench).
  *
  * - "Arousal-Linked": nervous system activation preceded the clench (autonomic → RMMA)
@@ -111,20 +144,19 @@ export function classifyEvents(data: SensorPoint[]): {
   const hrValues = data.map(d => d.hr)
   const hrBaseline = median(hrValues)
 
-  // ── Classify each clench event ──
+  // ── Classify each bruxating event ──
   const clenchEvents: ClassifiedClenchEvent[] = rawClenches.map(ev => {
-    // Check if nervous system activation preceded the clench (0.5–15 s before start)
     const preData = data.filter(d => d.t >= ev.startMs - PRECEDE_WINDOW_MS && d.t < ev.startMs - PRECEDE_GAP_MS)
     const maxAct = preData.length
       ? Math.max(...preData.map(d => hrToActivation(d.hr, hrBaseline)))
       : 0
 
     const type: 'arousal-linked' | 'isolated' = maxAct > ACTIVATION_PRECEDE ? 'arousal-linked' : 'isolated'
-    const peakJPI = emgToJPI(ev.peakEMG)
+    const peakIntensity = emgToIntensity(ev.peakEMG)
     const durationSec = (ev.endMs - ev.startMs) / 1000
-    const severityLabel = peakJPI >= 7 ? 'Severe' : peakJPI >= 4 ? 'Moderate' : 'Mild'
+    const severityLabel = peakIntensity >= 75 ? 'Severe' : peakIntensity >= 50 ? 'Moderate' : 'Mild'
 
-    return { ...ev, type, peakJPI, durationSec, severityLabel }
+    return { ...ev, type, peakIntensity, durationSec, severityLabel }
   })
 
   // ── Detect arousal-only events ──
@@ -146,7 +178,6 @@ export function classifyEvents(data: SensorPoint[]): {
     if (last - startMs >= AROUSAL_MIN_MS) arousalPeaks.push({ startMs, endMs: last, peakActivation: peak })
   }
 
-  // Keep only peaks that don't overlap or precede a clench within the follow window
   const arousalOnlyEvents = arousalPeaks.filter(ap =>
     !rawClenches.some(ev => ev.startMs >= ap.startMs - 5000 && ev.startMs <= ap.endMs + AROUSAL_FOLLOW_MS)
   )
@@ -191,7 +222,7 @@ export function computeReport(
     id: uuid(), sessionId, userId, duration: durationSeconds,
     clenchCount: clenchEvents.length, stressLikelihood, sleepQualityScore,
     avgHR: Math.round(avgHR * 10) / 10, hrVariability: Math.round(hrVariability * 10) / 10,
-    peakEMG: Math.round(peakEMG * 1000) / 1000,
+    peakEMG: Math.round(peakEMG),
     avgTemp: Math.round(avgTemp * 100) / 100, tempDrift: Math.round(tempDrift * 100) / 100,
     createdAt: new Date().toISOString(),
   }
@@ -242,7 +273,7 @@ export function computeLiveStats(data: SensorPoint[], precomputed?: ClassifiedCl
     stressLikelihood,
     sleepQualityScore,
     avgHR: Math.round(avgHR * 10) / 10,
-    peakEMG: Math.round(peakEMG * 1000) / 1000,
+    peakEMG: Math.round(peakEMG),
     avgTemp: Math.round(avgTemp * 100) / 100,
     isClenching,
   }
@@ -259,12 +290,11 @@ export function formatDuration(seconds: number): string {
 export function generateBullets(r: ReportRecord): string[] {
   return [
     `Session duration: ${formatDuration(r.duration)}`,
-    `Clench events detected: ${r.clenchCount}`,
+    `Bruxating events detected: ${r.clenchCount}`,
     `Arousal-linked events: ${r.stressLikelihood}%`,
     `Sleep quality score: ${r.sleepQualityScore}/100`,
     `Avg heart rate: ${r.avgHR} bpm (±${r.hrVariability} bpm)`,
-    `Avg temperature: ${r.avgTemp}°C (drift: ${r.tempDrift}°C)`,
-    `Peak EMG amplitude: ${r.peakEMG.toFixed(3)} µV`,
+    `Peak Jaw Activity: ${emgToCategory(r.peakEMG).toUpperCase()} (ADC ${Math.round(r.peakEMG)})`,
   ]
 }
 
@@ -279,11 +309,11 @@ export function reportToPlainText(r: ReportRecord): string {
 Duration: ${formatDuration(r.duration)}
 Date: ${new Date(r.createdAt).toLocaleDateString()}
 
-CLENCHING ANALYSIS
+BRUXISM ANALYSIS
 Severity: ${severity}
-Total Clench Events: ${r.clenchCount}
+Total Bruxating Events: ${r.clenchCount}
 Arousal-Linked Events: ${r.stressLikelihood}%
-Peak EMG Amplitude: ${r.peakEMG.toFixed(2)} µV
+Peak Jaw Activity: ${emgToCategory(r.peakEMG).toUpperCase()} (ADC ${Math.round(r.peakEMG)})
 
 SLEEP QUALITY
 Sleep Quality Score: ${r.sleepQualityScore}/100
@@ -292,13 +322,10 @@ CARDIAC DATA
 Average Heart Rate: ${r.avgHR} bpm
 HR Variability (±): ${r.hrVariability} bpm
 
-TEMPERATURE
-Average: ${r.avgTemp}°C  |  Session Drift: ${r.tempDrift}°C
-
 CLINICAL NOTES
-${r.clenchCount > 8 ? '- High clench frequency — bruxism treatment likely warranted' :
-  r.clenchCount > 4 ? '- Moderate clenching activity detected' :
-  '- Low clench frequency noted'}
+${r.clenchCount > 8 ? '- High bruxating frequency — bruxism treatment likely warranted' :
+  r.clenchCount > 4 ? '- Moderate bruxating activity detected' :
+  '- Low bruxating frequency noted'}
 ${r.stressLikelihood > 50 ? '- Strong arousal-clenching correlation — autonomic-driven bruxism likely' : ''}
 ${r.sleepQualityScore < 60 ? '- Poor sleep quality score — specialist consultation recommended' : ''}`.trim()
 }
@@ -327,36 +354,42 @@ Session Duration: ${durationMin} minutes
 Total Data Points: ${data.length}
 Sampling Rate: 10 Hz
 
+EMG ACTIVITY THRESHOLDS (raw ADC from hardware)
+─────────────────────────────────────────────────
+  Below 165 ADC → Relaxed
+  165–250 ADC   → Talking / Conversation
+  Above 250 ADC → Clenching
+  1024 ADC      = 100% intensity cap
+
 OVERALL STATISTICS
 ──────────────────
-Total Clench Events: ${stats.clenchCount}
-  - Arousal-Linked: ${arousalLinked.length} (nervous system activated before clench)
+Total Bruxating Events: ${stats.clenchCount}
+  - Arousal-Linked: ${arousalLinked.length} (nervous system activated before bruxating)
   - Isolated: ${isolated.length} (no preceding autonomic activation)
-  - Arousal-Only Events: ${arousalOnlyEvents.length} (nervous system spiked, no clench followed)
+  - Arousal-Only Events: ${arousalOnlyEvents.length} (nervous system spiked, no bruxating followed)
 Arousal-Linked Rate: ${stats.stressLikelihood}%
 Sleep Quality Score: ${stats.sleepQualityScore}/100
 Average Heart Rate: ${stats.avgHR} bpm
-Peak EMG Amplitude: ${stats.peakEMG.toFixed(3)} µV
-Currently Clenching: ${stats.isClenching ? 'YES' : 'No'}
+Peak Jaw Activity: ${emgToCategory(stats.peakEMG).toUpperCase()} (ADC ${Math.round(stats.peakEMG)})
+Currently Bruxating: ${stats.isClenching ? 'YES' : 'No'}
 
 CARDIAC BASELINE
 ────────────────
 Median HR: ${hrBase.toFixed(1)} bpm
 HR Variability (σ): ${hrVar.toFixed(1)} bpm
-Arousal Threshold: ${(hrBase * 1.05).toFixed(1)} bpm (+5% from baseline)
 
 EVENT CLASSIFICATION
 ────────────────────
 Events are classified by the temporal cardiac-muscular relationship:
-  "Arousal-Linked" — Nervous system activation preceded the clench by 0.5–15s (autonomic → RMMA cascade)
-  "Isolated" — Jaw clenched without preceding autonomic activation (habitual/structural)
-  "Arousal-Only" — Nervous system spiked but no clenching followed (decoupled arousal)
+  "Arousal-Linked" — Nervous system activation preceded the bruxating by 0.5–15s (autonomic → RMMA cascade)
+  "Isolated" — Jaw bruxated without preceding autonomic activation (habitual/structural)
+  "Arousal-Only" — Nervous system spiked but no bruxating followed (decoupled arousal)
 
-CLENCH EVENT LOG
-────────────────`
+BRUXATING EVENT LOG
+───────────────────`
 
   if (clenchEvents.length === 0) {
-    dump += '\nNo clench events detected yet.\n'
+    dump += '\nNo bruxating events detected yet.\n'
   } else {
     clenchEvents.forEach((ev, i) => {
       const startSec = (ev.startMs / 1000).toFixed(1)
@@ -365,10 +398,11 @@ CLENCH EVENT LOG
       const hrDuring = eventData.map(d => d.hr)
       const avgHrEv = hrDuring.length ? (hrDuring.reduce((a, b) => a + b, 0) / hrDuring.length).toFixed(1) : 'N/A'
       const maxHrEv = hrDuring.length ? Math.max(...hrDuring).toFixed(1) : 'N/A'
+      const category = emgToCategory(ev.peakEMG)
       dump += `\nEvent #${i + 1} [${ev.type.toUpperCase()}] — ${ev.severityLabel}`
       dump += `\n  Time: ${startSec}s → ${endSec}s (duration: ${ev.durationSec.toFixed(1)}s)`
-      dump += `\n  Jaw Pressure Index: ${ev.peakJPI.toFixed(1)}/10`
-      dump += `\n  Peak EMG: ${ev.peakEMG.toFixed(3)} µV`
+      dump += `\n  EMG Intensity: ${ev.peakIntensity.toFixed(1)}% (${category})`
+      dump += `\n  Peak EMG: ${ev.peakEMG.toFixed(0)} ADC`
       dump += `\n  HR during event: avg ${avgHrEv} bpm, max ${maxHrEv} bpm`
     })
   }
@@ -386,13 +420,13 @@ CLENCH EVENT LOG
 
   if (clenchEvents.length >= 2) {
     const half = Math.floor(clenchEvents.length / 2)
-    const firstAvg = clenchEvents.slice(0, half).reduce((a, e) => a + e.peakJPI, 0) / half
-    const secondAvg = clenchEvents.slice(half).reduce((a, e) => a + e.peakJPI, 0) / (clenchEvents.length - half)
+    const firstAvg = clenchEvents.slice(0, half).reduce((a, e) => a + e.peakIntensity, 0) / half
+    const secondAvg = clenchEvents.slice(half).reduce((a, e) => a + e.peakIntensity, 0) / (clenchEvents.length - half)
     const trend = secondAvg > firstAvg * 1.1 ? 'INCREASING' : secondAvg < firstAvg * 0.9 ? 'DECREASING' : 'STABLE'
     dump += `\n\nTREND ANALYSIS\n──────────────`
-    dump += `\nJaw Pressure Trend: ${trend}`
-    dump += `\n  First half avg JPI: ${firstAvg.toFixed(1)}/10`
-    dump += `\n  Second half avg JPI: ${secondAvg.toFixed(1)}/10`
+    dump += `\nBruxating Intensity Trend: ${trend}`
+    dump += `\n  First half avg: ${firstAvg.toFixed(1)}%`
+    dump += `\n  Second half avg: ${secondAvg.toFixed(1)}%`
   }
 
   return dump

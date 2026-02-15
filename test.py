@@ -39,8 +39,6 @@ SHEET_POLL_SEC = 1.0     # how often to poll Google Sheets for new rows
 
 # ─── EMG ADC Configuration ────────────────────────────────────────────────────
 EMG_COL        = 1                 # Column B (0-indexed) — where ESP32 writes EMG
-EMG_ADC_STEPS  = 2 ** 12          # 4096 steps for 12-bit ADC
-EMG_VREF       = 3.3              # ESP32 reference voltage
 
 
 # ─── CORS ──────────────────────────────────────────────────────────────────────
@@ -104,11 +102,6 @@ def parse_cell_float(cell):
         return None
 
 
-def adc_to_volts(raw_adc):
-    """Convert 12-bit ADC reading to volts: (adc / 2^12) * 3.3"""
-    return (raw_adc / EMG_ADC_STEPS) * EMG_VREF
-
-
 def poll_emg():
     """
     Background thread — polls Google Sheets for new rows written by the ESP32.
@@ -142,10 +135,9 @@ def poll_emg():
             if EMG_COL < len(last_row):
                 raw = parse_cell_float(last_row[EMG_COL])
                 if raw is not None:
-                    volts = adc_to_volts(raw)
                     with emg_lock:
-                        latest_emg['value'] = round(volts, 4)
-                    print(f'[Sheets]   Latest: ADC={raw:.0f} → {volts:.4f} V')
+                        latest_emg['value'] = raw
+                    print(f'[Sheets]   Latest: ADC={raw:.0f}')
 
     except Exception as e:
         print(f'[Sheets] Initial read error: {e}')
@@ -162,12 +154,11 @@ def poll_emg():
                 if EMG_COL < len(last_row):
                     raw_adc = parse_cell_float(last_row[EMG_COL])
                     if raw_adc is not None:
-                        volts = adc_to_volts(raw_adc)
                         with emg_lock:
-                            latest_emg['value'] = round(volts, 4)
+                            latest_emg['value'] = raw_adc
 
                         added = new_count - row_count
-                        print(f'[Sheets] +{added} rows → ADC={raw_adc:.0f} → {volts:.4f} V  (total: {new_count})')
+                        print(f'[Sheets] +{added} rows → ADC={raw_adc:.0f}  (total: {new_count})')
 
                 row_count = new_count
 
@@ -204,7 +195,7 @@ def combine_and_stream():
 
         entry = {
             'bpm': round(bpm, 1),
-            'emg': round(emg, 4),
+            'emg': round(emg, 1),   # raw ADC value (not volts)
             't':   t_ms,
         }
 
@@ -265,7 +256,7 @@ def latest():
         bpm = latest_hr['bpm']
     with emg_lock:
         emg = latest_emg['value']
-    return json.dumps({'bpm': round(bpm, 1), 'emg': round(emg, 4)})
+    return json.dumps({'bpm': round(bpm, 1), 'emg': round(emg, 1)})
 
 
 # ─── Session Reset ────────────────────────────────────────────────────────────
@@ -295,7 +286,7 @@ if __name__ == '__main__':
     print('─────────────────────────────────────────')
     print(f'  HR input:   POST /data  (from wearable)')
     print(f'  EMG input:  Google Sheets col B (polled every {SHEET_POLL_SEC}s)')
-    print(f'  EMG ADC:    12-bit (0–{EMG_ADC_STEPS - 1}), V = (adc/{EMG_ADC_STEPS})*{EMG_VREF}')
+    print(f'  EMG ADC:    12-bit raw (0–4095), streamed as-is')
     print(f'  Output:     GET /stream  (SSE @ {STREAM_HZ} Hz)')
     print(f'  Sheet:      {SPREADSHEET_ID}')
     print('─────────────────────────────────────────')

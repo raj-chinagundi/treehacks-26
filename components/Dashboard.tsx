@@ -3,9 +3,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { signOut } from 'next-auth/react'
 import { SensorPoint, ReportRecord, SessionRecord } from '@/types'
-import { generateBullets, computeLiveStats, LiveStats, classifyEvents, ClassifiedClenchEvent, ArousalOnlyEvent } from '@/lib/reportLogic'
-import JawPressureChart     from './charts/JawPressureChart'
-import NervousSystemChart   from './charts/NervousSystemChart'
+import { generateBullets, computeLiveStats, LiveStats, classifyEvents, ClassifiedClenchEvent, emgToCategory } from '@/lib/reportLogic'
+import HeartRateChart    from './charts/HeartRateChart'
+import JawActivityChart  from './charts/JawActivityChart'
 import ReportBox  from './ReportBox'
 import ChatBot    from './ChatBot'
 import StatusBadge from './StatusBadge'
@@ -29,6 +29,14 @@ const EMPTY_STATS: LiveStats = {
   avgHR: 0, peakEMG: 0, avgTemp: 0, isClenching: false,
 }
 
+// ─── Category helpers ─────────────────────────────────────────────────────
+
+const CATEGORY_STYLES = {
+  relaxed:   { label: 'Relaxed',    color: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/20', dot: 'bg-emerald-400' },
+  talking:   { label: 'Talking',    color: 'text-amber-400',   bg: 'bg-amber-500/10',   border: 'border-amber-500/20',   dot: 'bg-amber-400' },
+  clenching: { label: 'CLENCHING',  color: 'text-rose-400',    bg: 'bg-rose-500/15',     border: 'border-rose-500/30',    dot: 'bg-rose-400 animate-pulse' },
+} as const
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function Dashboard({ user }: { user: User }) {
@@ -44,8 +52,7 @@ export default function Dashboard({ user }: { user: User }) {
   const [saving,         setSaving]         = useState(false)
   const [clenchFlash,    setClenchFlash]    = useState(false)
   const [deviceConnected, setDeviceConnected] = useState(false)
-  const [clenchEvents,       setClenchEvents]       = useState<ClassifiedClenchEvent[]>([])
-  const [arousalOnlyEvents,  setArousalOnlyEvents]  = useState<ArousalOnlyEvent[]>([])
+  const [clenchEvents,   setClenchEvents]   = useState<ClassifiedClenchEvent[]>([])
 
   const rawBuf        = useRef<SensorPoint[]>([])
   const startTime     = useRef(0)
@@ -135,9 +142,8 @@ export default function Dashboard({ user }: { user: User }) {
     analysisTimer.current = setInterval(() => {
       const buf = rawBuf.current
       if (!buf.length) return
-      const { clenchEvents: evts, arousalOnlyEvents: arousalEvts } = classifyEvents(buf)
+      const { clenchEvents: evts } = classifyEvents(buf)
       setClenchEvents(evts)
-      setArousalOnlyEvents(arousalEvts)
       const stats = computeLiveStats(buf, evts)
       setLiveStats(stats)
 
@@ -164,9 +170,8 @@ export default function Dashboard({ user }: { user: User }) {
     setDeviceConnected(false)
 
     if (rawBuf.current.length) {
-      const { clenchEvents: evts, arousalOnlyEvents: arousalEvts } = classifyEvents(rawBuf.current)
+      const { clenchEvents: evts } = classifyEvents(rawBuf.current)
       setClenchEvents(evts)
-      setArousalOnlyEvents(arousalEvts)
       setLiveStats(computeLiveStats(rawBuf.current, evts))
     }
     setAppStatus('disconnected')
@@ -218,9 +223,8 @@ export default function Dashboard({ user }: { user: User }) {
         const s: SessionRecord = await sRes.json()
         if (s.dataPoints) {
           setChartData(s.dataPoints)
-          const { clenchEvents: evts, arousalOnlyEvents: arousalEvts } = classifyEvents(s.dataPoints)
+          const { clenchEvents: evts } = classifyEvents(s.dataPoints)
           setClenchEvents(evts)
-          setArousalOnlyEvents(arousalEvts)
           setLiveStats(computeLiveStats(s.dataPoints, evts))
         }
       }
@@ -236,9 +240,13 @@ export default function Dashboard({ user }: { user: User }) {
   const bullets = report ? generateBullets(report) : []
   const sideData = chartData.slice(-DISPLAY_WINDOW)
 
-  const latestHR = sideData.length ? sideData[sideData.length - 1].hr : 0
+  const latestHR  = sideData.length ? sideData[sideData.length - 1].hr : 0
   const latestEMG = sideData.length ? sideData[sideData.length - 1].emg : 0
   const isConnected = appStatus === 'connected'
+
+  // Current jaw activity category
+  const currentCategory = latestEMG > 0 ? emgToCategory(latestEMG) : 'relaxed'
+  const catStyle = CATEGORY_STYLES[currentCategory]
 
   const chatSessionStatus = appStatus === 'connected' ? 'recording' as const
     : report ? 'report_ready' as const
@@ -370,19 +378,16 @@ export default function Dashboard({ user }: { user: User }) {
         }`}>
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Live Analysis</h2>
-            <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold transition-all duration-300 ${
-              liveStats.isClenching
-                ? 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
-                : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-            }`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${liveStats.isClenching ? 'bg-rose-400 animate-pulse' : 'bg-emerald-400'}`} />
-              {liveStats.isClenching ? 'CLENCHING DETECTED' : 'Normal'}
+            {/* Current jaw activity category badge */}
+            <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold transition-all duration-300 ${catStyle.bg} ${catStyle.color} border ${catStyle.border}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${catStyle.dot}`} />
+              {catStyle.label}
             </div>
           </div>
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <div className="bg-slate-800/60 rounded-xl p-3">
-              <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium">Clench Events</p>
+              <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium">Clenching Events</p>
               <p className="text-xl font-bold text-white mt-0.5 tabular-nums">{liveStats.clenchCount}</p>
             </div>
             <div className="bg-slate-800/60 rounded-xl p-3">
@@ -392,8 +397,8 @@ export default function Dashboard({ user }: { user: User }) {
               }`}>{liveStats.sleepQualityScore}<span className="text-sm font-normal text-slate-500">/100</span></p>
             </div>
             <div className="bg-slate-800/60 rounded-xl p-3">
-              <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium">Peak EMG</p>
-              <p className="text-xl font-bold text-cyan-400 mt-0.5 tabular-nums">{liveStats.peakEMG.toFixed(2)}</p>
+              <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium">Current State</p>
+              <p className={`text-xl font-bold mt-0.5 ${catStyle.color}`}>{catStyle.label}</p>
             </div>
             <div className="bg-slate-800/60 rounded-xl p-3">
               <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium">Avg Heart Rate</p>
@@ -414,8 +419,8 @@ export default function Dashboard({ user }: { user: User }) {
             <p className="text-2xl font-bold text-orange-400 mt-1 tabular-nums">{latestHR ? `${latestHR.toFixed(0)}` : '—'} <span className="text-sm font-normal text-slate-500">bpm</span></p>
           </div>
           <div className="bg-slate-900/60 backdrop-blur rounded-2xl border border-slate-800 p-4">
-            <p className="text-xs text-slate-500 uppercase tracking-wider font-medium">EMG Level</p>
-            <p className={`text-2xl font-bold mt-1 tabular-nums ${liveStats.isClenching ? 'text-rose-400' : 'text-cyan-400'}`}>{latestEMG ? `${latestEMG.toFixed(3)}` : '—'} <span className="text-sm font-normal text-slate-500">µV</span></p>
+            <p className="text-xs text-slate-500 uppercase tracking-wider font-medium">Jaw Activity</p>
+            <p className={`text-2xl font-bold mt-1 ${catStyle.color}`}>{catStyle.label}</p>
           </div>
           <div className="bg-slate-900/60 backdrop-blur rounded-2xl border border-slate-800 p-4">
             <p className="text-xs text-slate-500 uppercase tracking-wider font-medium">Duration</p>
@@ -427,21 +432,21 @@ export default function Dashboard({ user }: { user: User }) {
           </div>
         </div>
 
-        {/* ── Aligned Charts: Nervous System + Jaw Pressure (same time axis) ── */}
+        {/* ── Charts: Heart Rate + Jaw Activity (same time axis) ────── */}
         <div className="bg-slate-900/60 backdrop-blur rounded-2xl border border-slate-800 p-5">
 
-          {/* Top: Nervous System Activation */}
+          {/* Top: Heart Rate */}
           <div className="mb-1">
             <div className="flex items-center justify-between mb-2">
               <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-violet-400"></span>
-                Nervous System Activation
+                <span className="w-2 h-2 rounded-full bg-orange-400"></span>
+                Heart Rate
               </p>
-              {arousalOnlyEvents.length > 0 && (
-                <span className="text-[10px] text-amber-300 font-mono tabular-nums">{arousalOnlyEvents.length} arousal-only</span>
+              {latestHR > 0 && (
+                <span className="text-[10px] text-orange-300 font-mono tabular-nums">{latestHR.toFixed(0)} bpm</span>
               )}
             </div>
-            <NervousSystemChart data={sideData} arousalOnlyEvents={arousalOnlyEvents} hideXAxis />
+            <HeartRateChart data={sideData} hideXAxis />
           </div>
 
           {/* Alignment divider */}
@@ -451,27 +456,27 @@ export default function Dashboard({ user }: { user: User }) {
             <div className="flex-1 h-px bg-slate-700/50" />
           </div>
 
-          {/* Bottom: Jaw Pressure Index */}
+          {/* Bottom: Jaw Activity */}
           <div>
             <div className="flex items-center justify-between mb-2">
               <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-amber-400"></span>
-                Jaw Pressure Index
+                Jaw Activity
               </p>
               {liveStats.clenchCount > 0 && (
                 <span className="text-[10px] text-slate-400 font-mono tabular-nums">
-                  {liveStats.stressLikelihood}% arousal-linked · {100 - liveStats.stressLikelihood}% isolated
+                  {liveStats.clenchCount} clenching events
                 </span>
               )}
             </div>
-            <JawPressureChart data={sideData} events={clenchEvents} />
+            <JawActivityChart data={sideData} />
           </div>
 
-          {/* Event legend */}
+          {/* Category legend */}
           <div className="flex items-center gap-4 mt-3 text-[10px] text-slate-500">
-            <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-rose-400" /> Arousal-Linked</span>
-            <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-amber-400" /> Isolated</span>
-            <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-amber-300" /> Arousal Only</span>
+            <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-emerald-400" /> Relaxed</span>
+            <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-amber-400" /> Talking</span>
+            <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-rose-400" /> Clenching</span>
           </div>
         </div>
 
