@@ -1,22 +1,51 @@
 import { SensorPoint, ReportRecord } from '@/types'
 import { v4 as uuid } from 'uuid'
 
-const EMG_THRESHOLD = 0.5
-const MIN_CLENCH_MS = 400       // 400 ms minimum to count as a clench event
-const HR_WINDOW_MS = 15_000     // ±15 s around each event
-const HR_SPIKE_PCT = 0.06       // 6 % above baseline to count as correlated spike
+// ─── Constants ───────────────────────────────────────────────────────────────
 
-interface ClenchEvent {
+const EMG_THRESHOLD      = 0.5
+const MIN_CLENCH_MS      = 400
+const PRECEDE_WINDOW_MS  = 15_000   // look up to 15 s before clench start
+const PRECEDE_GAP_MS     = 500      // must precede by at least 0.5 s
+const ACTIVATION_PRECEDE  = 5       // 5 % activation to count as preceding arousal
+const AROUSAL_DETECT_PCT = 12       // 12 % activation to detect standalone arousal peaks
+const AROUSAL_MIN_MS     = 2000     // 2 s minimum for arousal peak detection
+const AROUSAL_FOLLOW_MS  = 15_000   // check for clench within 15 s after arousal peak
+
+// ─── Signal Transforms ──────────────────────────────────────────────────────
+
+/**
+ * Converts raw EMG (µV) to Jaw Pressure Index (0–10).
+ *
+ * Bands: 0-2 Relaxed · 2-4 Tense · 4-7 Clenching · 7-10 Grinding
+ */
+export function emgToJPI(emg: number): number {
+  if (emg <= 0.15) return (emg / 0.15) * 2
+  if (emg <= 0.5)  return 2 + ((emg - 0.15) / 0.35) * 2
+  if (emg <= 1.5)  return 4 + ((emg - 0.5) / 1.0) * 3
+  return Math.min(10, 7 + ((emg - 1.5) / 1.5) * 3)
+}
+
+/**
+ * Converts raw HR to percentage deviation from personal sleeping baseline.
+ * Returns 0 when HR is at or below baseline.
+ */
+export function hrToActivation(hr: number, baseline: number): number {
+  if (baseline <= 0) return 0
+  return Math.max(0, ((hr - baseline) / baseline) * 100)
+}
+
+// ─── Internal Helpers ────────────────────────────────────────────────────────
+
+interface RawClenchEvent {
   startMs: number
   endMs: number
   peakEMG: number
 }
 
-function detectClenches(data: SensorPoint[]): ClenchEvent[] {
-  const events: ClenchEvent[] = []
-  let active = false
-  let startMs = 0
-  let peak = 0
+function detectClenches(data: SensorPoint[]): RawClenchEvent[] {
+  const events: RawClenchEvent[] = []
+  let active = false, startMs = 0, peak = 0
 
   for (const p of data) {
     if (p.emg >= EMG_THRESHOLD) {
@@ -27,7 +56,7 @@ function detectClenches(data: SensorPoint[]): ClenchEvent[] {
       active = false; peak = 0
     }
   }
-  if (active) {
+  if (active && data.length) {
     const last = data[data.length - 1].t
     if (last - startMs >= MIN_CLENCH_MS) events.push({ startMs, endMs: last, peakEMG: peak })
   }
@@ -35,6 +64,7 @@ function detectClenches(data: SensorPoint[]): ClenchEvent[] {
 }
 
 function median(values: number[]): number {
+  if (!values.length) return 0
   const s = [...values].sort((a, b) => a - b)
   return s[Math.floor(s.length / 2)]
 }
@@ -44,6 +74,87 @@ function stdDev(values: number[]): number {
   const mean = values.reduce((a, b) => a + b, 0) / values.length
   return Math.sqrt(values.reduce((a, b) => a + (b - mean) ** 2, 0) / values.length)
 }
+
+// ─── Classified Events ───────────────────────────────────────────────────────
+
+export interface ClassifiedClenchEvent {
+  startMs: number
+  endMs: number
+  peakEMG: number
+  type: 'arousal-linked' | 'isolated'
+  peakJPI: number
+  durationSec: number
+  severityLabel: string
+}
+
+export interface ArousalOnlyEvent {
+  startMs: number
+  endMs: number
+  peakActivation: number
+}
+
+/**
+ * Classifies clench events by temporal relationship with nervous system activation.
+ * Also detects arousal-only events (nervous system spike with no subsequent clench).
+ *
+ * - "Arousal-Linked": nervous system activation preceded the clench (autonomic → RMMA)
+ * - "Isolated": jaw clenched without preceding autonomic activation (habitual/structural)
+ * - "Arousal-Only": nervous system spiked but no clenching followed (decoupled arousal)
+ */
+export function classifyEvents(data: SensorPoint[]): {
+  clenchEvents: ClassifiedClenchEvent[]
+  arousalOnlyEvents: ArousalOnlyEvent[]
+} {
+  if (!data.length) return { clenchEvents: [], arousalOnlyEvents: [] }
+
+  const rawClenches = detectClenches(data)
+  const hrValues = data.map(d => d.hr)
+  const hrBaseline = median(hrValues)
+
+  // ── Classify each clench event ──
+  const clenchEvents: ClassifiedClenchEvent[] = rawClenches.map(ev => {
+    // Check if nervous system activation preceded the clench (0.5–15 s before start)
+    const preData = data.filter(d => d.t >= ev.startMs - PRECEDE_WINDOW_MS && d.t < ev.startMs - PRECEDE_GAP_MS)
+    const maxAct = preData.length
+      ? Math.max(...preData.map(d => hrToActivation(d.hr, hrBaseline)))
+      : 0
+
+    const type: 'arousal-linked' | 'isolated' = maxAct > ACTIVATION_PRECEDE ? 'arousal-linked' : 'isolated'
+    const peakJPI = emgToJPI(ev.peakEMG)
+    const durationSec = (ev.endMs - ev.startMs) / 1000
+    const severityLabel = peakJPI >= 7 ? 'Severe' : peakJPI >= 4 ? 'Moderate' : 'Mild'
+
+    return { ...ev, type, peakJPI, durationSec, severityLabel }
+  })
+
+  // ── Detect arousal-only events ──
+  const arousalPeaks: ArousalOnlyEvent[] = []
+  let active = false, startMs = 0, peak = 0
+
+  for (const p of data) {
+    const act = hrToActivation(p.hr, hrBaseline)
+    if (act >= AROUSAL_DETECT_PCT) {
+      if (!active) { active = true; startMs = p.t; peak = act }
+      else peak = Math.max(peak, act)
+    } else if (active) {
+      if (p.t - startMs >= AROUSAL_MIN_MS) arousalPeaks.push({ startMs, endMs: p.t, peakActivation: peak })
+      active = false; peak = 0
+    }
+  }
+  if (active && data.length) {
+    const last = data[data.length - 1].t
+    if (last - startMs >= AROUSAL_MIN_MS) arousalPeaks.push({ startMs, endMs: last, peakActivation: peak })
+  }
+
+  // Keep only peaks that don't overlap or precede a clench within the follow window
+  const arousalOnlyEvents = arousalPeaks.filter(ap =>
+    !rawClenches.some(ev => ev.startMs >= ap.startMs - 5000 && ev.startMs <= ap.endMs + AROUSAL_FOLLOW_MS)
+  )
+
+  return { clenchEvents, arousalOnlyEvents }
+}
+
+// ─── Report Generation ───────────────────────────────────────────────────────
 
 export function computeReport(
   sessionId: string,
@@ -60,34 +171,25 @@ export function computeReport(
     }
   }
 
-  const clenches = detectClenches(data)
+  const { clenchEvents } = classifyEvents(data)
   const hrValues = data.map(d => d.hr)
-  const hrBaseline = median(hrValues)
   const avgHR = hrValues.reduce((a, b) => a + b, 0) / hrValues.length
   const hrVariability = stdDev(hrValues)
   const peakEMG = Math.max(...data.map(d => d.emg))
   const avgTemp = data.reduce((a, b) => a + b.temp, 0) / data.length
   const tempDrift = Math.abs(data[data.length - 1].temp - data[0].temp)
 
-  // Stress likelihood: % clenches with HR spike in ±15 s window
-  let stressCount = 0
-  for (const ev of clenches) {
-    const window = data.filter(d => d.t >= ev.startMs - HR_WINDOW_MS && d.t <= ev.endMs + HR_WINDOW_MS)
-    if (window.length && Math.max(...window.map(d => d.hr)) > hrBaseline * (1 + HR_SPIKE_PCT)) {
-      stressCount++
-    }
-  }
-  const stressLikelihood = clenches.length ? Math.round((stressCount / clenches.length) * 100) : 0
+  const arousalLinkedCount = clenchEvents.filter(e => e.type === 'arousal-linked').length
+  const stressLikelihood = clenchEvents.length ? Math.round((arousalLinkedCount / clenchEvents.length) * 100) : 0
 
-  // Sleep quality: 100 minus penalties
-  const clenchPenalty = Math.min(40, clenches.length * 2)
+  const clenchPenalty = Math.min(40, clenchEvents.length * 2)
   const hrVarPenalty = Math.min(30, hrVariability * 0.5)
   const tempPenalty = Math.min(20, tempDrift * 100)
   const sleepQualityScore = Math.max(0, Math.round(100 - clenchPenalty - hrVarPenalty - tempPenalty))
 
   return {
     id: uuid(), sessionId, userId, duration: durationSeconds,
-    clenchCount: clenches.length, stressLikelihood, sleepQualityScore,
+    clenchCount: clenchEvents.length, stressLikelihood, sleepQualityScore,
     avgHR: Math.round(avgHR * 10) / 10, hrVariability: Math.round(hrVariability * 10) / 10,
     peakEMG: Math.round(peakEMG * 1000) / 1000,
     avgTemp: Math.round(avgTemp * 100) / 100, tempDrift: Math.round(tempDrift * 100) / 100,
@@ -95,11 +197,11 @@ export function computeReport(
   }
 }
 
-// ─── Live Stats (lightweight, runs every chart tick) ─────────────────────────
+// ─── Live Stats ──────────────────────────────────────────────────────────────
 
 export interface LiveStats {
   clenchCount: number
-  stressLikelihood: number
+  stressLikelihood: number   // arousal-linked %
   sleepQualityScore: number
   avgHR: number
   peakEMG: number
@@ -109,32 +211,25 @@ export interface LiveStats {
 
 /**
  * Computes running analysis from the current data buffer.
- * Lightweight version of computeReport — called every ~1s while connected.
+ * Accepts optional pre-computed events to avoid double classification.
  */
-export function computeLiveStats(data: SensorPoint[]): LiveStats {
+export function computeLiveStats(data: SensorPoint[], precomputed?: ClassifiedClenchEvent[]): LiveStats {
   if (!data.length) {
     return { clenchCount: 0, stressLikelihood: 0, sleepQualityScore: 100, avgHR: 0, peakEMG: 0, avgTemp: 0, isClenching: false }
   }
 
-  const clenches = detectClenchesExported(data)
+  const clenchEvents = precomputed ?? classifyEvents(data).clenchEvents
   const hrValues = data.map(d => d.hr)
-  const hrBaseline = median(hrValues)
-  const avgHR = hrValues.reduce((a, b) => a + b, 0) / hrValues.length
   const hrVariability = stdDev(hrValues)
+  const avgHR = hrValues.reduce((a, b) => a + b, 0) / hrValues.length
   const peakEMG = Math.max(...data.map(d => d.emg))
   const avgTemp = data.reduce((a, b) => a + b.temp, 0) / data.length
   const tempDrift = Math.abs(data[data.length - 1].temp - data[0].temp)
 
-  let stressCount = 0
-  for (const ev of clenches) {
-    const w = data.filter(d => d.t >= ev.startMs - HR_WINDOW_MS && d.t <= ev.endMs + HR_WINDOW_MS)
-    if (w.length && Math.max(...w.map(d => d.hr)) > hrBaseline * (1 + HR_SPIKE_PCT)) {
-      stressCount++
-    }
-  }
-  const stressLikelihood = clenches.length ? Math.round((stressCount / clenches.length) * 100) : 0
+  const arousalLinkedCount = clenchEvents.filter(e => e.type === 'arousal-linked').length
+  const stressLikelihood = clenchEvents.length ? Math.round((arousalLinkedCount / clenchEvents.length) * 100) : 0
 
-  const clenchPenalty = Math.min(40, clenches.length * 2)
+  const clenchPenalty = Math.min(40, clenchEvents.length * 2)
   const hrVarPenalty = Math.min(30, hrVariability * 0.5)
   const tempPenalty = Math.min(20, tempDrift * 100)
   const sleepQualityScore = Math.max(0, Math.round(100 - clenchPenalty - hrVarPenalty - tempPenalty))
@@ -143,7 +238,7 @@ export function computeLiveStats(data: SensorPoint[]): LiveStats {
   const isClenching = last.emg >= EMG_THRESHOLD
 
   return {
-    clenchCount: clenches.length,
+    clenchCount: clenchEvents.length,
     stressLikelihood,
     sleepQualityScore,
     avgHR: Math.round(avgHR * 10) / 10,
@@ -153,47 +248,71 @@ export function computeLiveStats(data: SensorPoint[]): LiveStats {
   }
 }
 
-function detectClenchesExported(data: SensorPoint[]) {
-  return detectClenches(data)
+// ─── Utilities ───────────────────────────────────────────────────────────────
+
+export function formatDuration(seconds: number): string {
+  const m = Math.floor(seconds / 60)
+  const s = seconds % 60
+  return `${m}m ${s}s`
 }
 
-// ─── Classified clench events (for charts) ───────────────────────────────────
-
-export interface ClassifiedClenchEvent {
-  startMs: number
-  endMs: number
-  peakEMG: number
-  stressCorrelated: boolean
+export function generateBullets(r: ReportRecord): string[] {
+  return [
+    `Session duration: ${formatDuration(r.duration)}`,
+    `Clench events detected: ${r.clenchCount}`,
+    `Arousal-linked events: ${r.stressLikelihood}%`,
+    `Sleep quality score: ${r.sleepQualityScore}/100`,
+    `Avg heart rate: ${r.avgHR} bpm (±${r.hrVariability} bpm)`,
+    `Avg temperature: ${r.avgTemp}°C (drift: ${r.tempDrift}°C)`,
+    `Peak EMG amplitude: ${r.peakEMG.toFixed(3)} µV`,
+  ]
 }
+
+export function reportToPlainText(r: ReportRecord): string {
+  const severity =
+    r.sleepQualityScore < 40 ? 'Severe' :
+    r.sleepQualityScore < 60 ? 'Moderate' :
+    r.sleepQualityScore < 80 ? 'Mild' : 'Minimal'
+
+  return `JAWSENSE SESSION REPORT
+========================
+Duration: ${formatDuration(r.duration)}
+Date: ${new Date(r.createdAt).toLocaleDateString()}
+
+CLENCHING ANALYSIS
+Severity: ${severity}
+Total Clench Events: ${r.clenchCount}
+Arousal-Linked Events: ${r.stressLikelihood}%
+Peak EMG Amplitude: ${r.peakEMG.toFixed(2)} µV
+
+SLEEP QUALITY
+Sleep Quality Score: ${r.sleepQualityScore}/100
+
+CARDIAC DATA
+Average Heart Rate: ${r.avgHR} bpm
+HR Variability (±): ${r.hrVariability} bpm
+
+TEMPERATURE
+Average: ${r.avgTemp}°C  |  Session Drift: ${r.tempDrift}°C
+
+CLINICAL NOTES
+${r.clenchCount > 8 ? '- High clench frequency — bruxism treatment likely warranted' :
+  r.clenchCount > 4 ? '- Moderate clenching activity detected' :
+  '- Low clench frequency noted'}
+${r.stressLikelihood > 50 ? '- Strong arousal-clenching correlation — autonomic-driven bruxism likely' : ''}
+${r.sleepQualityScore < 60 ? '- Poor sleep quality score — specialist consultation recommended' : ''}`.trim()
+}
+
+// ─── Sensor Data Dump (for GPT-4o context) ───────────────────────────────────
 
 /**
- * Detects clench events and classifies each as stress-correlated or not
- * using a ±15s HR window — same logic as the report engine.
- */
-export function classifyClenchEvents(data: SensorPoint[]): ClassifiedClenchEvent[] {
-  const clenches = detectClenches(data)
-  if (!clenches.length || !data.length) return []
-
-  const hrValues = data.map(d => d.hr)
-  const hrBaseline = median(hrValues)
-
-  return clenches.map(ev => {
-    const w = data.filter(d => d.t >= ev.startMs - HR_WINDOW_MS && d.t <= ev.endMs + HR_WINDOW_MS)
-    const hrElevated = w.length > 0 && Math.max(...w.map(d => d.hr)) > hrBaseline * (1 + HR_SPIKE_PCT)
-    return { startMs: ev.startMs, endMs: ev.endMs, peakEMG: ev.peakEMG, stressCorrelated: hrElevated }
-  })
-}
-
-// ─── Sensor data dump (for GPT-4o context) ───────────────────────────────────
-
-/**
- * Builds a detailed plain-text dump of all sensor data and clench events
+ * Builds a detailed plain-text dump of all sensor data and classified events
  * for use as GPT-4o system prompt context.
  */
 export function buildSensorDataDump(data: SensorPoint[], stats: LiveStats): string {
-  const events = classifyClenchEvents(data)
-  const stressEvents = events.filter(e => e.stressCorrelated)
-  const nonStressEvents = events.filter(e => !e.stressCorrelated)
+  const { clenchEvents, arousalOnlyEvents } = classifyEvents(data)
+  const arousalLinked = clenchEvents.filter(e => e.type === 'arousal-linked')
+  const isolated = clenchEvents.filter(e => e.type === 'isolated')
 
   const durationMs = data.length ? data[data.length - 1].t - data[0].t : 0
   const durationMin = (durationMs / 60000).toFixed(1)
@@ -211,9 +330,10 @@ Sampling Rate: 10 Hz
 OVERALL STATISTICS
 ──────────────────
 Total Clench Events: ${stats.clenchCount}
-  - Stress-Correlated: ${stressEvents.length} (HR elevated within ±15s)
-  - Non-Stress: ${nonStressEvents.length} (no HR elevation)
-Stress Correlation Rate: ${stats.stressLikelihood}%
+  - Arousal-Linked: ${arousalLinked.length} (nervous system activated before clench)
+  - Isolated: ${isolated.length} (no preceding autonomic activation)
+  - Arousal-Only Events: ${arousalOnlyEvents.length} (nervous system spiked, no clench followed)
+Arousal-Linked Rate: ${stats.stressLikelihood}%
 Sleep Quality Score: ${stats.sleepQualityScore}/100
 Average Heart Rate: ${stats.avgHR} bpm
 Peak EMG Amplitude: ${stats.peakEMG.toFixed(3)} µV
@@ -223,94 +343,57 @@ CARDIAC BASELINE
 ────────────────
 Median HR: ${hrBase.toFixed(1)} bpm
 HR Variability (σ): ${hrVar.toFixed(1)} bpm
-HR Spike Threshold: ${(hrBase * (1 + HR_SPIKE_PCT)).toFixed(1)} bpm (baseline + 6%)
+Arousal Threshold: ${(hrBase * 1.05).toFixed(1)} bpm (+5% from baseline)
+
+EVENT CLASSIFICATION
+────────────────────
+Events are classified by the temporal cardiac-muscular relationship:
+  "Arousal-Linked" — Nervous system activation preceded the clench by 0.5–15s (autonomic → RMMA cascade)
+  "Isolated" — Jaw clenched without preceding autonomic activation (habitual/structural)
+  "Arousal-Only" — Nervous system spiked but no clenching followed (decoupled arousal)
 
 CLENCH EVENT LOG
 ────────────────`
 
-  if (events.length === 0) {
+  if (clenchEvents.length === 0) {
     dump += '\nNo clench events detected yet.\n'
   } else {
-    events.forEach((ev, i) => {
+    clenchEvents.forEach((ev, i) => {
       const startSec = (ev.startMs / 1000).toFixed(1)
       const endSec = (ev.endMs / 1000).toFixed(1)
-      const durSec = ((ev.endMs - ev.startMs) / 1000).toFixed(1)
-      const type = ev.stressCorrelated ? 'STRESS' : 'NON-STRESS'
       const eventData = data.filter(d => d.t >= ev.startMs && d.t <= ev.endMs)
       const hrDuring = eventData.map(d => d.hr)
       const avgHrEv = hrDuring.length ? (hrDuring.reduce((a, b) => a + b, 0) / hrDuring.length).toFixed(1) : 'N/A'
       const maxHrEv = hrDuring.length ? Math.max(...hrDuring).toFixed(1) : 'N/A'
-      dump += `\nEvent #${i + 1} [${type}]`
-      dump += `\n  Time: ${startSec}s → ${endSec}s (duration: ${durSec}s)`
+      dump += `\nEvent #${i + 1} [${ev.type.toUpperCase()}] — ${ev.severityLabel}`
+      dump += `\n  Time: ${startSec}s → ${endSec}s (duration: ${ev.durationSec.toFixed(1)}s)`
+      dump += `\n  Jaw Pressure Index: ${ev.peakJPI.toFixed(1)}/10`
       dump += `\n  Peak EMG: ${ev.peakEMG.toFixed(3)} µV`
       dump += `\n  HR during event: avg ${avgHrEv} bpm, max ${maxHrEv} bpm`
     })
   }
 
-  if (events.length >= 2) {
-    const half = Math.floor(events.length / 2)
-    const firstAvg = events.slice(0, half).reduce((a, e) => a + e.peakEMG, 0) / half
-    const secondAvg = events.slice(half).reduce((a, e) => a + e.peakEMG, 0) / (events.length - half)
+  if (arousalOnlyEvents.length > 0) {
+    dump += `\n\nAROUSAL-ONLY EVENTS (${arousalOnlyEvents.length})`
+    dump += `\n────────────────────`
+    arousalOnlyEvents.forEach((ev, i) => {
+      const startSec = (ev.startMs / 1000).toFixed(1)
+      const endSec = (ev.endMs / 1000).toFixed(1)
+      const durSec = ((ev.endMs - ev.startMs) / 1000).toFixed(1)
+      dump += `\n  #${i + 1}: ${startSec}s → ${endSec}s (${durSec}s) — Peak activation: +${ev.peakActivation.toFixed(1)}%`
+    })
+  }
+
+  if (clenchEvents.length >= 2) {
+    const half = Math.floor(clenchEvents.length / 2)
+    const firstAvg = clenchEvents.slice(0, half).reduce((a, e) => a + e.peakJPI, 0) / half
+    const secondAvg = clenchEvents.slice(half).reduce((a, e) => a + e.peakJPI, 0) / (clenchEvents.length - half)
     const trend = secondAvg > firstAvg * 1.1 ? 'INCREASING' : secondAvg < firstAvg * 0.9 ? 'DECREASING' : 'STABLE'
     dump += `\n\nTREND ANALYSIS\n──────────────`
-    dump += `\nClench Intensity Trend: ${trend}`
-    dump += `\n  First half avg peak: ${firstAvg.toFixed(3)} µV`
-    dump += `\n  Second half avg peak: ${secondAvg.toFixed(3)} µV`
+    dump += `\nJaw Pressure Trend: ${trend}`
+    dump += `\n  First half avg JPI: ${firstAvg.toFixed(1)}/10`
+    dump += `\n  Second half avg JPI: ${secondAvg.toFixed(1)}/10`
   }
 
   return dump
-}
-
-export function formatDuration(seconds: number): string {
-  const m = Math.floor(seconds / 60)
-  const s = seconds % 60
-  return `${m}m ${s}s`
-}
-
-export function generateBullets(r: ReportRecord): string[] {
-  return [
-    `Session duration: ${formatDuration(r.duration)}`,
-    `Clench events detected: ${r.clenchCount}`,
-    `Stress-associated clenching: ${r.stressLikelihood}%`,
-    `Sleep quality score: ${r.sleepQualityScore}/100`,
-    `Avg heart rate: ${r.avgHR} bpm (±${r.hrVariability} bpm)`,
-    `Avg temperature: ${r.avgTemp}°C (drift: ${r.tempDrift}°C)`,
-    `Peak EMG amplitude: ${r.peakEMG.toFixed(3)} µV`,
-  ]
-}
-
-/** Plain-text report fed into DentalAgent's Gemini system prompt */
-export function reportToPlainText(r: ReportRecord): string {
-  const severity =
-    r.sleepQualityScore < 40 ? 'Severe' :
-    r.sleepQualityScore < 60 ? 'Moderate' :
-    r.sleepQualityScore < 80 ? 'Mild' : 'Minimal'
-
-  return `JAWSENSE SESSION REPORT
-========================
-Duration: ${formatDuration(r.duration)}
-Date: ${new Date(r.createdAt).toLocaleDateString()}
-
-CLENCHING ANALYSIS
-Severity: ${severity}
-Total Clench Events: ${r.clenchCount}
-Stress-Associated Clenching: ${r.stressLikelihood}%
-Peak EMG Amplitude: ${r.peakEMG.toFixed(2)} µV
-
-SLEEP QUALITY
-Sleep Quality Score: ${r.sleepQualityScore}/100
-
-CARDIAC DATA
-Average Heart Rate: ${r.avgHR} bpm
-HR Variability (±): ${r.hrVariability} bpm
-
-TEMPERATURE
-Average: ${r.avgTemp}°C  |  Session Drift: ${r.tempDrift}°C
-
-CLINICAL NOTES
-${r.clenchCount > 8 ? '- High clench frequency — bruxism treatment likely warranted' :
-  r.clenchCount > 4 ? '- Moderate clenching activity detected' :
-  '- Low clench frequency noted'}
-${r.stressLikelihood > 50 ? '- Strong stress-cardiac correlation — stress-induced bruxism likely' : ''}
-${r.sleepQualityScore < 60 ? '- Poor sleep quality score — specialist consultation recommended' : ''}`.trim()
 }

@@ -4,9 +4,9 @@ import { useState, useEffect, useRef } from 'react'
 import { signOut } from 'next-auth/react'
 import { SensorPoint, ReportRecord, SessionRecord } from '@/types'
 import { createSensorState, generatePoint, SensorState } from '@/lib/mockSensor'
-import { generateBullets, computeLiveStats, LiveStats, classifyClenchEvents, ClassifiedClenchEvent } from '@/lib/reportLogic'
-import StressClenchChart    from './charts/StressClenchChart'
-import NonStressClenchChart from './charts/NonStressClenchChart'
+import { generateBullets, computeLiveStats, LiveStats, classifyEvents, ClassifiedClenchEvent, ArousalOnlyEvent } from '@/lib/reportLogic'
+import JawPressureChart     from './charts/JawPressureChart'
+import NervousSystemChart   from './charts/NervousSystemChart'
 import ReportBox  from './ReportBox'
 import ChatBot    from './ChatBot'
 import StatusBadge from './StatusBadge'
@@ -46,7 +46,8 @@ export default function Dashboard({ user }: { user: User }) {
   const [saving,         setSaving]         = useState(false)
   const [clenchFlash,    setClenchFlash]    = useState(false)
   const [deviceConnected, setDeviceConnected] = useState(false)
-  const [clenchEvents,   setClenchEvents]   = useState<ClassifiedClenchEvent[]>([])
+  const [clenchEvents,       setClenchEvents]       = useState<ClassifiedClenchEvent[]>([])
+  const [arousalOnlyEvents,  setArousalOnlyEvents]  = useState<ArousalOnlyEvent[]>([])
 
   const rawBuf        = useRef<SensorPoint[]>([])
   const sensorState   = useRef<SensorState | null>(null)
@@ -152,9 +153,11 @@ export default function Dashboard({ user }: { user: User }) {
     analysisTimer.current = setInterval(() => {
       const buf = rawBuf.current
       if (!buf.length) return
-      const stats = computeLiveStats(buf)
+      const { clenchEvents: evts, arousalOnlyEvents: arousalEvts } = classifyEvents(buf)
+      setClenchEvents(evts)
+      setArousalOnlyEvents(arousalEvts)
+      const stats = computeLiveStats(buf, evts)
       setLiveStats(stats)
-      setClenchEvents(classifyClenchEvents(buf))
 
       if (stats.isClenching && !prevClenching.current) {
         setClenchFlash(true)
@@ -181,8 +184,10 @@ export default function Dashboard({ user }: { user: User }) {
     setDeviceConnected(false)
 
     if (rawBuf.current.length) {
-      setLiveStats(computeLiveStats(rawBuf.current))
-      setClenchEvents(classifyClenchEvents(rawBuf.current))
+      const { clenchEvents: evts, arousalOnlyEvents: arousalEvts } = classifyEvents(rawBuf.current)
+      setClenchEvents(evts)
+      setArousalOnlyEvents(arousalEvts)
+      setLiveStats(computeLiveStats(rawBuf.current, evts))
     }
     setAppStatus('disconnected')
   }
@@ -233,8 +238,10 @@ export default function Dashboard({ user }: { user: User }) {
         const s: SessionRecord = await sRes.json()
         if (s.dataPoints) {
           setChartData(s.dataPoints)
-          setLiveStats(computeLiveStats(s.dataPoints))
-          setClenchEvents(classifyClenchEvents(s.dataPoints))
+          const { clenchEvents: evts, arousalOnlyEvents: arousalEvts } = classifyEvents(s.dataPoints)
+          setClenchEvents(evts)
+          setArousalOnlyEvents(arousalEvts)
+          setLiveStats(computeLiveStats(s.dataPoints, evts))
         }
       }
       setAppStatus('report_ready')
@@ -440,32 +447,51 @@ export default function Dashboard({ user }: { user: User }) {
           </div>
         </div>
 
-        {/* ── Two Main Charts (Stress Clenching + Non-Stress Clenching) ── */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 lg:gap-6">
-          <div className="bg-slate-900/60 backdrop-blur rounded-2xl border border-slate-800 p-5">
-            <div className="flex items-center justify-between mb-3">
+        {/* ── Aligned Charts: Nervous System + Jaw Pressure (same time axis) ── */}
+        <div className="bg-slate-900/60 backdrop-blur rounded-2xl border border-slate-800 p-5">
+
+          {/* Top: Nervous System Activation */}
+          <div className="mb-1">
+            <div className="flex items-center justify-between mb-2">
               <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-rose-400"></span>
-                Stress-Caused Clenching
+                <span className="w-2 h-2 rounded-full bg-violet-400"></span>
+                Nervous System Activation
               </p>
-              {liveStats.stressLikelihood > 0 && (
-                <span className="text-xs text-rose-400 font-mono tabular-nums">{liveStats.stressLikelihood}% correlated</span>
+              {arousalOnlyEvents.length > 0 && (
+                <span className="text-[10px] text-amber-300 font-mono tabular-nums">{arousalOnlyEvents.length} arousal-only</span>
               )}
             </div>
-            <StressClenchChart data={sideData} events={clenchEvents} />
+            <NervousSystemChart data={sideData} arousalOnlyEvents={arousalOnlyEvents} hideXAxis />
           </div>
 
-          <div className="bg-slate-900/60 backdrop-blur rounded-2xl border border-slate-800 p-5">
-            <div className="flex items-center justify-between mb-3">
+          {/* Alignment divider */}
+          <div className="flex items-center gap-2 my-1.5">
+            <div className="flex-1 h-px bg-slate-700/50" />
+            <span className="text-[9px] text-slate-600 uppercase tracking-widest">time aligned</span>
+            <div className="flex-1 h-px bg-slate-700/50" />
+          </div>
+
+          {/* Bottom: Jaw Pressure Index */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
               <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-amber-400"></span>
-                Non-Stress Clenching
+                Jaw Pressure Index
               </p>
-              {liveStats.stressLikelihood < 100 && liveStats.clenchCount > 0 && (
-                <span className="text-xs text-amber-400 font-mono tabular-nums">{100 - liveStats.stressLikelihood}% non-stress</span>
+              {liveStats.clenchCount > 0 && (
+                <span className="text-[10px] text-slate-400 font-mono tabular-nums">
+                  {liveStats.stressLikelihood}% arousal-linked · {100 - liveStats.stressLikelihood}% isolated
+                </span>
               )}
             </div>
-            <NonStressClenchChart data={sideData} events={clenchEvents} />
+            <JawPressureChart data={sideData} events={clenchEvents} />
+          </div>
+
+          {/* Event legend */}
+          <div className="flex items-center gap-4 mt-3 text-[10px] text-slate-500">
+            <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-rose-400" /> Arousal-Linked</span>
+            <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-amber-400" /> Isolated</span>
+            <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-amber-300" /> Arousal Only</span>
           </div>
         </div>
 
