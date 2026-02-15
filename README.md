@@ -104,7 +104,7 @@ sleepsense/
 ## Architecture Overview
 
 <!-- use a relative path and HTML to control size -->
-<img src="./sys-architecture.png" alt="System architecture" width="600" height="400">
+<img src="./sys-architecture.png" alt="System architecture" width="700" height="500">
 
 **Data flow:**
 
