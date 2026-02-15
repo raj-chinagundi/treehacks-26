@@ -103,20 +103,8 @@ sleepsense/
 
 ## Architecture Overview
 
-```
-┌──────────────┐    POST /data     ┌──────────────────────┐   SSE /stream    ┌─────────────────────┐
-│  HR Wearable │ ─────────────────▶│                      │ ────────────────▶│                     │
-└──────────────┘                   │  SleepSense Data Hub │                  │  Next.js Dashboard  │
-┌──────────────┐  Google Sheets    │   (test.py :5001)    │                  │  (localhost:3000)   │
-│  ESP32 EMG   │ ─────────────────▶│                      │                  │                     │
-└──────────────┘                   └──────────────────────┘                  │  ┌───────────────┐  │
-                                                                            │  │ Live Charts   │  │
-                                                                            │  │ Event Detect  │  │
-                                                                            │  │ Report Engine │  │
-                                                                            │  │ GPT-4o Chat   │  │
-                                                                            │  └───────────────┘  │
-                                                                            └─────────────────────┘
-```
+<!-- use a relative path and HTML to control size -->
+<img src="./sys-architecture.png" alt="System architecture" width="300" height="200">
 
 **Data flow:**
 
