@@ -71,7 +71,8 @@ sleepsense/
 │
 ├── data/
 │   └── db.json                     # Auto-created local JSON database
-│
+├── design/CAD_enclosure            # design files for mask
+├── hardware/esp32_serial_blocking  # data capture and data stream over wifi through esp32
 ├── test.py                         # Flask data hub (SleepSense Data Hub) — unifies HR + EMG into 10 Hz SSE stream
 ├── requirements.txt                # Python dependencies (flask, gspread, google-auth)
 ├── package.json                    # Node dependencies and scripts
@@ -107,7 +108,7 @@ sleepsense/
 │  HR Wearable │ ─────────────────▶│                      │ ────────────────▶│                     │
 └──────────────┘                   │  SleepSense Data Hub │                  │  Next.js Dashboard  │
 ┌──────────────┐  Google Sheets    │   (test.py :5001)    │                  │  (localhost:3000)   │
-│  ESP32 EMG   │ ─────────────────▶│   10 Hz combiner     │                  │                     │
+│  ESP32 EMG   │ ─────────────────▶│                      │                  │                     │
 └──────────────┘                   └──────────────────────┘                  │  ┌───────────────┐  │
                                                                             │  │ Live Charts   │  │
                                                                             │  │ Event Detect  │  │
