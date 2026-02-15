@@ -3,7 +3,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { signOut } from 'next-auth/react'
 import { SensorPoint, ReportRecord, SessionRecord } from '@/types'
-import { createSensorState, generatePoint, SensorState } from '@/lib/mockSensor'
 import { generateBullets, computeLiveStats, LiveStats, classifyEvents, ClassifiedClenchEvent, ArousalOnlyEvent } from '@/lib/reportLogic'
 import JawPressureChart     from './charts/JawPressureChart'
 import NervousSystemChart   from './charts/NervousSystemChart'
@@ -13,7 +12,6 @@ import StatusBadge from './StatusBadge'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SENSOR_HZ      = 100  // ms per tick = 10 Hz
 const CHART_UPDATE   = 200  // ms between chart state updates
 const ANALYSIS_HZ    = 1000 // ms between live analysis recompute
 const DISPLAY_WINDOW = 200  // points shown in charts (20 s)
@@ -50,16 +48,13 @@ export default function Dashboard({ user }: { user: User }) {
   const [arousalOnlyEvents,  setArousalOnlyEvents]  = useState<ArousalOnlyEvent[]>([])
 
   const rawBuf        = useRef<SensorPoint[]>([])
-  const sensorState   = useRef<SensorState | null>(null)
   const startTime     = useRef(0)
-  const sensorTimer   = useRef<ReturnType<typeof setInterval> | null>(null)
   const chartTimer    = useRef<ReturnType<typeof setInterval> | null>(null)
   const tickTimer     = useRef<ReturnType<typeof setInterval> | null>(null)
   const analysisTimer = useRef<ReturnType<typeof setInterval> | null>(null)
   const prevClenching = useRef(false)
 
-  // Real HR from the device (updated via SSE)
-  const realHR        = useRef<number>(0)
+  // SSE connection to Flask data hub
   const sseSource     = useRef<EventSource | null>(null)
 
   // ── Load past sessions on mount ──────────────────────────────────────────
@@ -83,12 +78,8 @@ export default function Dashboard({ user }: { user: User }) {
     const session: SessionRecord = await res.json()
     setSessionId(session.id)
 
-    const urlSeed = new URLSearchParams(window.location.search).get('seed')
-    const seed = urlSeed ? parseInt(urlSeed, 10) : Math.floor(Math.random() * 99999)
-    sensorState.current = createSensorState(seed)
-    rawBuf.current      = []
-    startTime.current   = Date.now()
-    realHR.current      = 0
+    rawBuf.current    = []
+    startTime.current = Date.now()
 
     setElapsedSec(0)
     setChartData([])
@@ -97,46 +88,37 @@ export default function Dashboard({ user }: { user: User }) {
     setDeviceConnected(false)
     setAppStatus('connected')
 
-    // ── Connect to Flask SSE for real heart rate data ──
+    // Reset Flask session timer so SSE timestamps align with our session
+    try {
+      await fetch('http://localhost:5001/reset', { method: 'POST' })
+    } catch { /* Flask may not be running yet */ }
+
+    // ── Connect to Flask SSE for real-time HR + EMG data ──
     try {
       const sse = new EventSource(FLASK_SSE_URL)
       sseSource.current = sse
 
       sse.onmessage = (event) => {
         try {
-          const data = JSON.parse(event.data)
-          if (data.bpm != null) {
-            realHR.current = data.bpm
-            if (!deviceConnected) setDeviceConnected(true)
+          const d = JSON.parse(event.data)
+          const bpm = d.bpm ?? 0
+          const emg = d.emg ?? 0
+
+          // Only record data when at least one sensor is active
+          if (bpm > 0 || emg > 0) {
+            const t = Date.now() - startTime.current
+            rawBuf.current.push({ t, hr: bpm, emg, temp: 36.5 })
+            setDeviceConnected(true)
           }
         } catch { /* ignore parse errors */ }
       }
 
       sse.onerror = () => {
-        // SSE will auto-reconnect, but mark device as potentially disconnected
         setDeviceConnected(false)
       }
-
-      sse.onopen = () => {
-        setDeviceConnected(true)
-      }
     } catch {
-      // Flask server not running — fall back to mock HR
-      console.warn('Flask SSE not available, using mock HR data')
+      console.warn('Flask SSE not available — start test.py (data hub)')
     }
-
-    // 10 Hz sensor tick — uses real HR from device when available, mock EMG + temp
-    sensorTimer.current = setInterval(() => {
-      const elapsed = Date.now() - startTime.current
-      const pt = generatePoint(sensorState.current!, elapsed)
-
-      // Override HR with real device data if available
-      if (realHR.current > 0) {
-        pt.hr = realHR.current
-      }
-
-      rawBuf.current.push(pt)
-    }, SENSOR_HZ)
 
     // 5 Hz chart refresh
     chartTimer.current = setInterval(() => {
@@ -170,7 +152,6 @@ export default function Dashboard({ user }: { user: User }) {
   // ── Disconnect device ──────────────────────────────────────────────────
 
   function handleDisconnect() {
-    clearInterval(sensorTimer.current!)
     clearInterval(chartTimer.current!)
     clearInterval(tickTimer.current!)
     clearInterval(analysisTimer.current!)
@@ -180,7 +161,6 @@ export default function Dashboard({ user }: { user: User }) {
       sseSource.current.close()
       sseSource.current = null
     }
-    realHR.current = 0
     setDeviceConnected(false)
 
     if (rawBuf.current.length) {
@@ -206,7 +186,7 @@ export default function Dashboard({ user }: { user: User }) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         sessionId,
-        dataPoints: snapshot.slice(-2000),
+        dataPoints: snapshot,
         durationSeconds: durationSec,
       }),
     })
@@ -289,7 +269,7 @@ export default function Dashboard({ user }: { user: User }) {
                 : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
             }`}>
               <span className={`w-1.5 h-1.5 rounded-full ${deviceConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
-              {deviceConnected ? 'Device Live' : 'Mock Data'}
+              {deviceConnected ? 'Sensors Live' : 'Waiting for sensors…'}
             </div>
           )}
         </div>
