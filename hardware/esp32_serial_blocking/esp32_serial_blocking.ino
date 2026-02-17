@@ -8,15 +8,14 @@
 #include <ESP_Google_Sheet_Client.h>
 
 // WiFi credentials
-#define WIFI_SSID "Treehacks-2026"
-#define WIFI_PASSWORD "treehacks2026!"
+#define WIFI_SSID ""
+#define WIFI_PASSWORD ""
 
 // Google Service Account credentials
-#define PROJECT_ID "decent-lambda-487502-c7"
-#define CLIENT_EMAIL "espdata@decent-lambda-487502-c7.iam.gserviceaccount.com"
-const char PRIVATE_KEY[] PROGMEM = "-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDDxjOfRVfXRzOB\nf8eNGSceSw0aTwYNXN+3nERdFwEdQRgDdju0NxLAzGmyobpDTE4OGu373vz2KHAK\nxwjfgjm0Gzq+rDbq8QpAtzVgVX2v/W+ZF4Ibok+ClC1HkORED8xEBcusoU2RqGDs\nrZpz8isWBqGt5XMJk3WNd2PZGdpfFfw/8j/DDmNPvvzAM6q2oWbfj3qN2l1xDpEx\nd4mgMsV25M4lRnsE/lyf0vrkAqhfoFvsDe84YKVA9ySuFm/anCpZ+vW/bhVGVzWM\nPkEBJ3CYkw4Hd2XMpOJZ4VzuAbG2TR1n/oPh4Peit2vU1V/k6Q6fWpyF2Cyug7yQ\nW2QTxh0HAgMBAAECggEAAff1Pu3Ak16Y6v1w8T9GgGx6xj/zLKE5cqw0l8cKcNPd\nvPMsaISBQMUNbwlnSRP0WPn2WKkGXCdN8R3NPgoeMGxxq8cpijVASCRPeheB+woO\nXDi7SzHXoNWCmwye7vxFro1sXeEFWaiayOZ5/h56Rm9sosYC4R7FeNWxgFZdNsWK\nUE55RDYQQWtUlYC662twhDrTwbgSYq0h2XOui9wT9+IgUFLQvIVOOq07IvKG0H6r\nLK7pDJvXTYPkLdF8LKQVclC2Uv1Ysbde+qHTqY0M8x7pB2d3Mr7VTaioWUxyBPra\n1OctbQIyJJBPDobYM43limRxnmQWzKNnJRud5LYOKQKBgQDtJheGGoKg6l0Y+5vQ\ngf7GWEj47MEZoJMwXXKbK+30K+2cmKom3lXvSMCtBfvA8rbqLX/CCBSRfe+uJ5VF\nZY2O7QCGvbpmJIRr2ccEBXy3gm8LMita5q15FYiP8/BPSFBO9DzNjNJhIiCMkI/t\n3z83ICIzCTuFEBB4SriuPXhoPQKBgQDTViZA96pEWFXYkTGFdiWQus7dGGy+qvzs\nD6MJ0zNnQZsM287OYz4Vjaqn7CSFIobm7MABFxbkOv17TMDgmXkDYUM3klb2lfMm\nJrFk2TRvNgylFyT2OkBsknGo3cor4QXQfRONFRtZN8U/SDG9Othrx3s5YYhhaYpF\nPS6O3O1qkwKBgG56V20m/oH+jJ5t4NnTJaC7Ukt86DyLHObkMdbuMS2WJVzVljcD\nTx9pUjGI3w61Q9d2mNUItKRO+hC06gppU/gomx0qWCLrkjE4REmwULig8CBUH/R6\nEIifKn59kw8sThVqHMVZfEy5/FXfpt2XKjkBJE2IWI0VvcZ8cOrjQiu1AoGAT5/B\nwfCOIjn1/iaWNeaRuLnpfrvZHO1nZblugCEm2NyLAok+ndweZBiAF8yM5exgT1kb\n7k04vrzLDE2azgSE55UZsjJcuYM9nT4u0ARWESCYGwthTbQc2ctDL5CAv4+ElUzK\ntPki2LZ+hp04wEcPi2wZLUFmFO2ivvuSMxliCikCgYBYn1UJQetstpMddzAehWom\n3GCCdIWVyots+OCA6HJY7Rl7DGYDbg1roKALTGDTreKNwMCn9f8kuAJYB1a+2Dot\n8/0xwZclKZHTpA84/JqQeFhaHozJmfIghMg+4+R6kq0O1ZAR6EgAF3Ue0jGXWTmu\n6RS35kGw0CUC4ZY4C4TM7A==\n-----END PRIVATE KEY-----\n";
-
-const char spreadsheetId[] = "1GzS2Ayq_pcz_CHOagVSpwCO643_ruCh46IKTFw28oZo";
+#define PROJECT_ID ""
+#define CLIENT_EMAIL ""
+const char PRIVATE_KEY[] PROGMEM = "";
+const char spreadsheetId[] = "";
 
 void tokenStatusCallback(TokenInfo info){
     // Silent - no serial output
